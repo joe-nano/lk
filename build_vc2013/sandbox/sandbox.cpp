@@ -21,162 +21,383 @@
 
 namespace lk {
 
+enum Opcode {
+	END, ADD, SUB, MUL, DIV, LT, GT, LE, GE, NE, EQ, INC, DEC, OR, AND, NOT, NEG, EXP, PSH, POP, ARG, CMP,
+	J, JF, JT, IDX, KEY, MAT, WAT, SET, GET, WR, REF, FREF, CALL, TCALL, SZ, KEYS, TYP, VEC, HASH, RET };
+
+struct { Opcode op; const char *name; } op_table[] = {
+	{ END, "end" },
+	{ ADD, "add" },
+	{ SUB, "sub" },
+	{ MUL, "mul" },
+	{ DIV, "div" },
+	{ LT, "lt" },
+	{ GT, "gt" },
+	{ LE, "le" },
+	{ GE, "ge" },
+	{ NE, "ne" },
+	{ EQ, "eq" },
+	{ INC, "inc" },
+	{ DEC, "dec" },
+	{ OR, "or" },
+	{ AND, "and" },
+	{ NOT, "not" },
+	{ NEG, "neg" },
+	{ EXP, "exp" },
+	{ PSH, "psh" },
+	{ POP, "pop" },
+	{ ARG, "arg" },
+	{ CMP, "cmp" },
+	{ J, "j" },
+	{ JF, "jf" },
+	{ JT, "jt" },
+	{ IDX, "idx" },
+	{ KEY, "key" },
+	{ MAT, "mat" },
+	{ WAT, "wat" },
+	{ SET, "set" },
+	{ GET, "get" },
+	{ WR, "wr" },
+	{ REF, "ref" },
+	{ FREF, "fref" },
+	{ CALL, "call" },
+	{ TCALL, "tcall" },
+	{ SZ, "sz" },
+	{ KEYS, "keys" },
+	{ TYP, "typ" },
+	{ VEC, "vec" },
+	{ HASH, "hash" },
+	{ RET, "ret" },
+	{ END, 0 } };
+
 class code_gen
 {
 private:
+	unordered_map< lk_string, int, lk_string_hash, lk_string_equal > m_labelAddr;
 	int m_labelCounter;
-	lk_string m_output;
-	lk_string m_error;
+	std::vector<lk_string> m_breakAddr, m_continueAddr;
+
+	struct instr {
+		instr( Opcode _op, int _arg, const lk_string &_id, const char *lbl = 0 )
+			: op(_op), arg(_arg), id(_id) {
+			label = 0;
+			if ( lbl ) label = new lk_string(lbl);
+			const_value = 0.0;
+		}
+		instr( const instr &cpy )
+		{
+			copy( cpy );
+		}
+		~instr() { 
+			if (label) delete label;
+		}
+		void copy( const instr &cpy )
+		{
+			op = cpy.op;
+			arg = cpy.arg;
+			val = cpy.val;
+			id = cpy.id;
+			label = 0;
+			if ( cpy.label )
+				label = new lk_string(*cpy.label);
+			const_value = cpy.const_value;
+			const_literal = cpy.const_literal;
+		}
+
+		instr &operator=( const instr &rhs ) {
+			copy( rhs );
+			return *this;
+		}
+
+		Opcode op;
+		int arg;
+		lk::vardata_t val;
+		lk_string id;
+		lk_string *label;
+		double const_value;
+		lk_string const_literal;
+	};
+
+	std::vector<instr> m_asm;
 
 public:
 	code_gen() {
 		m_labelCounter = 0;
 	}
+	
+	lk_string assemble()
+	{
+		char buf[1024];
+		lk_string output;
+		for( size_t i=0;i<m_asm.size();i++ )
+		{
+			instr &ip = m_asm[i];
 
-	lk_string assembly() { return m_output; }
-	lk_string error() { return m_error; }
+			if ( ip.label )
+				ip.arg = m_labelAddr[ *ip.label ];
 
-	lk_string label()
+			size_t j=0;
+			while( op_table[j].name != 0 )
+			{
+				if ( ip.op == op_table[j].op )
+				{
+					sprintf(buf, "%07d: %4s   %07d  %s  (%lg) ('%s')\n",
+						(int)i, op_table[j].name, ip.arg, (const char*)ip.id.c_str(), ip.const_value, (const char*)ip.const_literal.c_str() );
+					output += buf;
+					break;
+				}
+				j++;
+			}
+		}
+		return output;
+	}
+
+	lk_string new_label()
 	{
 		return lk::format( "L%d", m_labelCounter++ );
 	}
 
+	void place_label( const lk_string &s )
+	{
+		m_labelAddr[ s ] = (int)m_asm.size();
+	}
+
+	int emit( Opcode o, int arg = 0, const lk_string &id = "", double cv = 0.0, const lk_string &cl = "")
+	{
+		instr x( o, arg, id );
+		x.const_value = cv;
+		x.const_literal = cl;
+		m_asm.push_back( x );
+		return m_asm.size();
+	}
+
+	int emit( Opcode o, const lk_string &L )
+	{
+		m_asm.push_back( instr(o, 0, "", (const char*) L.c_str()) );
+		return m_asm.size();
+	}
+
+/*
 	void emit( const lk_string &s )
 	{
 		if ( s.IsEmpty() ){
 			m_output += "\n";
 			return;
 		}
+		char sPC[15];
+		sprintf(sPC, "%6d:  ", m_pc);
 
 		if ( s[0] == 'L' )
-			m_output += s + "\n";
+			m_output += s + ":\n";
 		else
-			m_output += "   " + s + "\n";
+			m_output += lk_string(sPC) + s + "\n";
+
+		m_pc++;
 	}
+	*/
+	
 
-	enum Ctl { FAIL, OK, BREAK, CONTINUE, RETURN, EXIT };
-
-	Ctl eval( lk::node_t *root )
+	bool pfgen( lk::node_t *root )
 	{
-		if ( !root ) return OK;
+		if ( !root ) return true;
 
 		if ( list_t *n = dynamic_cast<list_t*>( root ) )
 		{
 			while( n )
 			{
-				if ( !eval( n->item ) )
-					return FAIL;
+				if ( !pfgen( n->item ) )
+					return false;
 
 				n=n->next;
 			}
 		}
 		else if ( iter_t *n = dynamic_cast<iter_t*>( root ) )
 		{
-			if ( n->init && !eval( n->init ) ) return FAIL;
+			if ( n->init && !pfgen( n->init ) ) return false;
 
 			// labels for beginning and end of loop
-			lk_string Lb = label();
-			lk_string Le = label();
+			lk_string Lb = new_label();
+			lk_string Le = new_label();
+			
+			m_continueAddr.push_back( Lb );
+			m_breakAddr.push_back( Le );
 
-			emit( Lb ) ;
+			place_label( Lb ) ;
 
-			if ( !eval( n->test ) ) return FAIL;
+			if ( !pfgen( n->test ) ) return false;
 
-			emit( "jf " + Le );
+			emit( JF, Le );
+			
+			pfgen( n->block );
 
-			Ctl c = eval( n->block );
-			switch( c )
-			{
-			case FAIL: return FAIL;
-			case BREAK: emit( "j " + Lb ); break;
-			case EXIT: emit( "end" ); break;
-			case RETURN: emit("ret"); break;
-			case CONTINUE:
-			case OK:
-				break;
-			}
+			if ( n->adv && !pfgen( n->adv ) ) return false;
 
+			emit( J, Lb );
+			place_label( Le );
 
-			if ( n->adv && !eval( n->adv ) ) return FAIL;
-
-			emit ("j " + Lb );
-			emit( Le );
+			m_continueAddr.pop_back();
+			m_breakAddr.pop_back();
 		}
 		else if ( cond_t *n = dynamic_cast<cond_t*>( root ) )
 		{	
-			lk_string L1 = label();
+			lk_string L1 = new_label();
 			lk_string L2 = L1;
 
-			eval( n->test );
-			emit( "jf " + L1 );
-			eval( n->on_true );
+			pfgen( n->test );
+			emit( JF, L1 );
+			pfgen( n->on_true );
 			if ( n->on_false )
 			{
-				L2 = label();
-				emit( "j " + L2 );
-				emit( L1 );
-				eval( n->on_false );
+				L2 = new_label();
+				emit( J, L2 );
+				place_label( L1 );
+				pfgen( n->on_false );
 			}
-			emit( L2 );
+			place_label( L2 );
 		}
 		else if ( expr_t *n = dynamic_cast<expr_t*>( root ) )
 		{
 			switch( n->oper )
 			{
 			case expr_t::PLUS:
-				eval( n->left );
-				eval( n->right );
-				emit( "add" );
+				pfgen( n->left );
+				pfgen( n->right );
+				emit( ADD );
 				break;
 			case expr_t::MINUS:
-				eval( n->left );
-				eval( n->right );
-				emit( "sub" );
-				emit( "neg" );
+				pfgen( n->left );
+				pfgen( n->right );
+				emit( SUB );
 				break;
 			case expr_t::MULT:
-				eval( n->left );
-				eval( n->right );
-				emit( "mul" );
+				pfgen( n->left );
+				pfgen( n->right );
+				emit( MUL );
 				break;
 			case expr_t::DIV:
-				eval( n->left );
-				eval( n->right );
-				emit( "div" );
+				pfgen( n->left );
+				pfgen( n->right );
+				emit( DIV );
 				break;
 			case expr_t::LT:
-				eval( n->left );
-				eval( n->right );
-				emit( "lt" );
+				pfgen( n->left );
+				pfgen( n->right );
+				emit( LT );
 				break;
 			case expr_t::GT:
-				eval( n->left );
-				eval( n->right );
-				emit( "gt" );
+				pfgen( n->left );
+				pfgen( n->right );
+				emit( GT );
 				break;
 			case expr_t::LE:
-				eval( n->left );
-				eval( n->right );
-				emit( "le" );
+				pfgen( n->left );
+				pfgen( n->right );
+				emit( LE );
 				break;
 			case expr_t::GE:
-				eval( n->left );
-				eval( n->right );
-				emit( "ge" );
+				pfgen( n->left );
+				pfgen( n->right );
+				emit( GE );
 				break;
 			case expr_t::NE:
-				eval( n->left );
-				eval( n->right );
-				emit( "ne" );
+				pfgen( n->left );
+				pfgen( n->right );
+				emit( NE );
 				break;
 			case expr_t::EQ:
-				eval( n->left );
-				eval( n->right );
-				emit( "eq" );
+				pfgen( n->left );
+				pfgen( n->right );
+				emit( EQ );
+				break;
+			case expr_t::INCR:
+				pfgen( n->left );
+				emit( INC );
+				break;
+			case expr_t::DECR:
+				pfgen( n->right );
+				emit( DEC );
+				break;
+			case expr_t::LOGIOR:
+			{
+				lk_string Lsc = new_label();
+				pfgen(n->left );
+				emit( PSH, 0 );
+				emit( NE );
+				emit( JT, Lsc );
+				pfgen(n->right);
+				emit( OR );
+				place_label( Lsc );
+			}
+				break;
+			case expr_t::LOGIAND:
+			{
+				lk_string Lsc = new_label();
+				pfgen(n->left );
+				emit( PSH, 0 );
+				emit( EQ );
+				emit( JT, Lsc );
+				pfgen(n->right );
+				emit( OR );
+				place_label( Lsc );
+			}
+				break;
+			case expr_t::NOT:
+				pfgen(n->left);
+				emit( NOT );
+				break;
+			case expr_t::NEG:
+				pfgen(n->left);
+				emit( NEG );
+				break;				
+			case expr_t::EXP:
+				pfgen(n->left);
+				pfgen(n->right);
+				emit( EXP );
+				break;
+			case expr_t::INDEX:
+				pfgen(n->left);
+				pfgen(n->right);
+				emit( IDX );
+				break;
+			case expr_t::HASH:
+				pfgen(n->left);
+				pfgen(n->right);
+				emit( KEY );
+				break;
+			case expr_t::MINUSAT:
+				pfgen(n->left );
+				pfgen(n->right);
+				emit( MAT );
+				break;
+			case expr_t::WHEREAT:
+				pfgen(n->left);
+				pfgen(n->right);
+				emit( WAT );
+				break;
+			case expr_t::PLUSEQ:
+				pfgen(n->left);
+				pfgen(n->right);
+				emit( ADD );
+				pfgen(n->left);
+				emit( WR );
+				break;
+			case expr_t::MINUSEQ:
+				pfgen(n->left);
+				pfgen(n->right);
+				emit( SUB );
+				pfgen(n->left);
+				emit( WR );
+				break;
+			case expr_t::DIVEQ:
+				pfgen(n->left);
+				pfgen(n->right);
+				emit( DIV );
+				pfgen(n->left);
+				emit( WR );
 				break;
 			case expr_t::ASSIGN:
 				{
-					if ( !eval( n->right ) ) return FAIL;
+					if ( !pfgen( n->right ) ) return false;
 
 					bool sset = false;
 					// if on the LHS of the assignment we have a special variable i.e. ${xy}, use a 
@@ -185,50 +406,199 @@ public:
 					{
 						if ( iden->special )
 						{
-							emit( "store! " + iden->name );
-							return OK;
+							emit( SET, 0, iden->name );
+							return true;
 						}
 					}
 
-					if ( !eval( n->left ) ) return FAIL;
-					emit( "store" );
+					if ( !pfgen( n->left ) ) return false;
+					emit( WR );
 				}
 				break;
+			case expr_t::CALL:
+			case expr_t::THISCALL:
+			{
+				// evaluate all the arguments and pushon to stack
+				list_t *argvals = dynamic_cast<list_t*>(n->right);
+				list_t *p = argvals;
+				int nargs = 0;
+
+				lk_string Lr = new_label();
+				
+				pfgen( n->left );
+								
+				while( p )
+				{
+					pfgen( p->item );
+					p = p->next;
+					nargs++;
+				}
+				emit( (n->oper == expr_t::THISCALL)? TCALL : CALL, nargs );
+			}
+				break;
+			case expr_t::SIZEOF:
+				pfgen( n->left );
+				emit( SZ );
+				break;
+			case expr_t::KEYSOF:
+				pfgen( n->left );
+				emit( KEYS );
+				break;
+			case expr_t::TYPEOF:
+				pfgen( n->left );
+				emit( TYP );
+				break;
+			case expr_t::INITVEC:
+			{
+				int len = 0;
+				list_t *p = dynamic_cast<list_t*>( n->left );
+				while( p )
+				{
+					pfgen( p->item );
+					p = p->next;
+					len++;
+				}
+				emit( VEC, len );
+			}
+				break;
+			case expr_t::INITHASH:
+			{
+				int npairs = 0;
+				list_t *p = dynamic_cast<list_t*>( n->left );
+				while (p)
+				{
+					expr_t *assign = dynamic_cast<expr_t*>(p->item);
+					if (assign && assign->oper == expr_t::ASSIGN)
+					{
+						pfgen( assign->left );
+						pfgen( assign->right );
+					}
+					p = p->next;
+					npairs++;
+				}
+				emit( HASH, npairs );
+			}
+				break;
+			case expr_t::SWITCH:
+			{
+				lk_string Le( new_label() );
+				std::vector<lk_string> labels;
+				list_t *p = dynamic_cast<list_t*>( n->right );
+				while( p )
+				{
+					labels.push_back( new_label() );
+					p = p->next;
+				}
+
+				pfgen( n->left );
+				p = dynamic_cast<list_t*>( n->right );
+				int idx = 0;
+				while( p )
+				{
+					emit( CMP, idx );
+					emit( JT, labels[idx] );
+					p = p->next;
+					idx++;
+				}
+
+				emit( J, Le );
+				
+				p = dynamic_cast<list_t*>( n->right );
+				idx = 0;
+				while( p )
+				{
+					place_label( labels[idx] );
+					pfgen( p->item );
+					emit( J, Le );
+					p = p->next;
+				}
+
+				place_label( Le );
+			}
+				break;
+
+			case expr_t::RETURN:
+				pfgen(n->left);
+				emit( RET );
+				break;
+
+			case expr_t::BREAK:
+				if ( m_breakAddr.size() == 0 )
+					return false;
+
+				emit( J, m_breakAddr.back() );
+				break;
+
+			case expr_t::CONTINUE:
+				if ( m_continueAddr.size() == 0 )
+					return false;
+				emit( J, m_continueAddr.back() );
+				break;
+
+			case expr_t::EXIT:
+				emit( END );
+				break;
+
+			case expr_t::DEFINE:
+			{
+				lk_string Le( new_label() );
+				lk_string Lf( new_label() );
+				emit( J, Le );
+				place_label( Lf );
+
+				list_t *p = dynamic_cast<list_t*>(n->left );
+				while( p )
+				{
+					pfgen( p->item );
+					emit( ARG );
+					p = p->next;
+				}
+
+				pfgen( n->right );
+
+				if ( m_asm.back().op != RET )
+					emit( RET );
+
+				place_label( Le );
+				emit( FREF, Lf );
+
+			}
+				break;
+
 			default:
-				m_error = lk_string("unsupported expression: ") + n->operstr();
-				return FAIL;
+				return false;
 			}
 		}
 		else if ( iden_t *n = dynamic_cast<iden_t*>( root ) )
 		{			
 			if ( n->special )
 			{
-				emit( "load! " + n->name );
-				return OK;;
+				emit( GET, 0, n->name );
+				return true;
 			}
 			else
-				emit( "load " + n->name );
+				emit( REF, 0, n->name );
 		}
 		else if ( constant_t *n = dynamic_cast<constant_t*>(root ) )
 		{
-			emit( "push " + lk::format("%lg",n->value) );
+			emit( PSH, 0, "", n->value );
 		}
 		else if ( literal_t *n = dynamic_cast<literal_t*>(root ) )
 		{
-			emit( "push '" + n->value + "'" );
+			emit( PSH, 0, "", 0.0, n->value );
 		}
 
-		return OK;
+		return true;
 	}
 };
 
 }; // namespace lk
 
-enum { ID_CODE = wxID_HIGHEST+149, ID_PARSE, ID_ASM };
+enum { ID_CODE = wxID_HIGHEST+149, ID_PARSE, ID_ASM, ID_OUTPUT };
 
 class VMTestFrame : public wxFrame
 {
-	wxTextCtrl *m_code, *m_parse, *m_asm;
+	wxTextCtrl *m_code, *m_parse, *m_asm, *m_output;
 public:
 	VMTestFrame() : wxFrame( NULL, wxID_ANY, "LK-VM", wxDefaultPosition, wxSize(1200,900) )
 	{
@@ -244,15 +614,30 @@ public:
 		m_asm = new wxTextCtrl( this, ID_ASM, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE );
 		m_asm->SetFont( font );
 		m_asm->SetForegroundColour( "Dark green" );
+		
+		m_output = new wxTextCtrl( this, ID_OUTPUT, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE );
+		m_output->SetFont( font );
+		m_output->SetForegroundColour( "Dark green" );
 
-		wxBoxSizer *sizer = new wxBoxSizer( wxHORIZONTAL );
-		sizer->Add( m_code, 1, wxALL|wxEXPAND, 0 );
-		sizer->Add( m_parse, 1, wxALL|wxEXPAND, 0 );
-		sizer->Add( m_asm, 1, wxALL|wxEXPAND, 0 );
-		SetSizer(sizer);
+		wxBoxSizer *hsizer = new wxBoxSizer( wxHORIZONTAL );
+		hsizer->Add( m_code, 1, wxALL|wxEXPAND, 0 );
+		hsizer->Add( m_parse, 1, wxALL|wxEXPAND, 0 );
+		hsizer->Add( m_asm, 1, wxALL|wxEXPAND, 0 );
+
+		wxBoxSizer *vsizer = new wxBoxSizer( wxVERTICAL );
+		vsizer->Add( hsizer, 3, wxALL|wxEXPAND, 0 );
+		vsizer->Add( m_output, 1, wxALL|wxEXPAND, 0 );
+		SetSizer(vsizer);
 
 		m_code->LoadFile( wxGetHomeDir() + "/.lk-vm-code" );
 		ParseAndGenerateAssembly();
+	}
+
+	static void output_cb( lk::invoke_t &cxt )
+	{
+		LK_DOC("out", "output data", "none" );
+		VMTestFrame *frm = (VMTestFrame*)cxt.user_data();
+		frm->m_output->AppendText( cxt.arg(0).as_string() );
 	}
 
 	void ParseAndGenerateAssembly()
@@ -266,14 +651,30 @@ public:
 			{
 				lk::pretty_print( output, node, 0 );
 				lk::code_gen cg;
-				if ( cg.eval( node ) ) assembly = cg.assembly();
-				else assembly = cg.error();
+				if ( cg.pfgen( node ) ) assembly = cg.assemble();
+				else assembly = "error in assembly generation";
 			}
 			else
 			{
 				for( int i=0;i<parse.error_count();i++ )
 					output += parse.error(i) + "\n";
 			}
+
+			/*
+			lk::env_t env;
+			env.register_funcs( lk::stdlib_basic() );
+			env.register_funcs( lk::stdlib_string() );
+			env.register_funcs( lk::stdlib_math() );
+			env.register_funcs( lk::stdlib_wxui() );
+			env.register_func( VMTestFrame::output_cb, this );
+
+			m_output->Clear();
+			lk::eval vm( node, &env );
+			if ( !vm.run() )
+			{
+				for( int i=0;i<vm.error_count();i++ )
+					m_output->AppendText( vm.get_error(i) );
+			}*/
 
 			delete node;
 		}
