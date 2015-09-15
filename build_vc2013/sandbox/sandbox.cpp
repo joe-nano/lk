@@ -73,11 +73,10 @@ class code_gen
 {
 private:
 	struct instr {
-		instr( Opcode _op, int _arg, const lk_string &_id, const char *lbl = 0 )
-			: op(_op), arg(_arg), id(_id) {
+		instr( Opcode _op, int _arg, const char *lbl = 0 )
+			: op(_op), arg(_arg) {
 			label = 0;
 			if ( lbl ) label = new lk_string(lbl);
-			const_value = 0.0;
 		}
 		instr( const instr &cpy )
 		{
@@ -90,13 +89,9 @@ private:
 		{
 			op = cpy.op;
 			arg = cpy.arg;
-			val = cpy.val;
-			id = cpy.id;
 			label = 0;
 			if ( cpy.label )
 				label = new lk_string(*cpy.label);
-			const_value = cpy.const_value;
-			const_literal = cpy.const_literal;
 		}
 
 		instr &operator=( const instr &rhs ) {
@@ -106,15 +101,13 @@ private:
 
 		Opcode op;
 		int arg;
-		lk::vardata_t val;
-		lk_string id;
 		lk_string *label;
-		double const_value;
-		lk_string const_literal;
 	};
 
 	std::vector<instr> m_asm;
 	unordered_map< lk_string, int, lk_string_hash, lk_string_equal > m_labelAddr;
+	std::vector< vardata_t > m_constData;
+	std::vector< lk_string > m_idList;
 	int m_labelCounter;
 	std::vector<lk_string> m_breakAddr, m_continueAddr;
 
@@ -127,6 +120,7 @@ public:
 	{
 		char buf[1024];
 		lk_string output;
+		
 		for( size_t i=0;i<m_asm.size();i++ )
 		{
 			instr &ip = m_asm[i];
@@ -139,19 +133,28 @@ public:
 			{
 				if ( ip.op == op_table[j].op )
 				{
-					sprintf(buf, "%07d: %4s   %07d  %s  (%lg) ('%s')\n",
-						(int)i, op_table[j].name, ip.arg, (const char*)ip.id.c_str(), ip.const_value, (const char*)ip.const_literal.c_str() );
+					sprintf(buf, "%6d: %4s (%02X)   %07d\n",
+						(int)i, op_table[j].name, (int)ip.op, ip.arg );
 					output += buf;
 					break;
 				}
 				j++;
 			}
 		}
+		
+		for( size_t i=0;i<m_constData.size();i++ )
+			output += ".data " + m_constData[i].as_string() + "\n";
+
+		for( size_t i=0;i<m_idList.size();i++ )
+			output += ".id " + m_idList[i] + "\n";
+
 		return output;
 	}
 
 	bool build( lk::node_t *root )
 	{
+		m_idList.clear();
+		m_constData.clear();
 		m_asm.clear();
 		m_labelAddr.clear();
 		m_labelCounter = 0;
@@ -164,6 +167,39 @@ public:
 
 private:
 
+	int place_identifier( const lk_string &id )
+	{
+		for( size_t i=0;i<m_idList.size();i++ )
+			if ( m_idList[i] == id )
+				return (int)i;
+
+		m_idList.push_back( id );
+		return m_idList.size() - 1;
+	}
+
+	int place_const( vardata_t &d )
+	{
+		for( size_t i=0;i<m_constData.size();i++ )
+			if ( m_constData[i].equals( d ) )
+				return (int)i;
+
+		m_constData.push_back( d );
+		return (int)m_constData.size()-1;
+	}
+
+	int const_value( double value )
+	{
+		vardata_t x;
+		x.assign( value );
+		return place_const( x );
+	}
+	int const_literal( const lk_string &lit )
+	{
+		vardata_t x;
+		x.assign( lit );
+		return place_const( x );
+	}
+
 	lk_string new_label()
 	{
 		return lk::format( "L%d", m_labelCounter++ );
@@ -174,41 +210,18 @@ private:
 		m_labelAddr[ s ] = (int)m_asm.size();
 	}
 
-	int emit( Opcode o, int arg = 0, const lk_string &id = "", double cv = 0.0, const lk_string &cl = "")
+	int emit( Opcode o, int arg = 0)
 	{
-		instr x( o, arg, id );
-		x.const_value = cv;
-		x.const_literal = cl;
+		instr x( o, arg );
 		m_asm.push_back( x );
 		return m_asm.size();
 	}
 
 	int emit( Opcode o, const lk_string &L )
 	{
-		m_asm.push_back( instr(o, 0, "", (const char*) L.c_str()) );
+		m_asm.push_back( instr(o, 0, (const char*) L.c_str()) );
 		return m_asm.size();
 	}
-
-/*
-	void emit( const lk_string &s )
-	{
-		if ( s.IsEmpty() ){
-			m_output += "\n";
-			return;
-		}
-		char sPC[15];
-		sprintf(sPC, "%6d:  ", m_pc);
-
-		if ( s[0] == 'L' )
-			m_output += s + ":\n";
-		else
-			m_output += lk_string(sPC) + s + "\n";
-
-		m_pc++;
-	}
-	*/
-	
-
 
 	bool pfgen( lk::node_t *root )
 	{
@@ -334,7 +347,7 @@ private:
 			{
 				lk_string Lsc = new_label();
 				pfgen(n->left );
-				emit( PSH, 0 );
+				emit( PSH, const_value(0) );
 				emit( NE );
 				emit( JT, Lsc );
 				pfgen(n->right);
@@ -346,7 +359,7 @@ private:
 			{
 				lk_string Lsc = new_label();
 				pfgen(n->left );
-				emit( PSH, 0 );
+				emit( PSH, const_value(0) );
 				emit( EQ );
 				emit( JT, Lsc );
 				pfgen(n->right );
@@ -419,7 +432,7 @@ private:
 					{
 						if ( iden->special )
 						{
-							emit( SET, 0, iden->name );
+							emit( SET, place_identifier(iden->name) );
 							return true;
 						}
 					}
@@ -435,17 +448,15 @@ private:
 				list_t *argvals = dynamic_cast<list_t*>(n->right);
 				list_t *p = argvals;
 				int nargs = 0;
-
-				lk_string Lr = new_label();
-				
-				pfgen( n->left );
-								
+																
 				while( p )
 				{
 					pfgen( p->item );
 					p = p->next;
 					nargs++;
 				}
+
+				pfgen( n->left );
 				emit( (n->oper == expr_t::THISCALL)? TCALL : CALL, nargs );
 			}
 				break;
@@ -508,7 +519,7 @@ private:
 				while( p )
 				{
 					pfgen( n->left );
-					emit( PSH,  0, "", (double)idx );
+					emit( PSH,  const_value(idx) );
 					emit( EQ );
 					emit( JT, labels[idx] );
 					p = p->next;
@@ -565,7 +576,7 @@ private:
 				while( p )
 				{
 					iden_t *id = dynamic_cast<iden_t*>( p->item );
-					emit( ARG, iarg++, id->name );
+					emit( ARG, place_identifier(id->name) );
 					p = p->next;
 				}
 
@@ -588,19 +599,19 @@ private:
 		{			
 			if ( n->special )
 			{
-				emit( GET, 0, n->name );
+				emit( GET, place_identifier(n->name) );
 				return true;
 			}
 			else
-				emit( REF, 0, n->name );
+				emit( REF, place_identifier(n->name) );
 		}
 		else if ( constant_t *n = dynamic_cast<constant_t*>(root ) )
 		{
-			emit( PSH, 0, "", n->value );
+			emit( PSH, const_value( n->value ) );
 		}
 		else if ( literal_t *n = dynamic_cast<literal_t*>(root ) )
 		{
-			emit( PSH, 0, "", 0.0, n->value );
+			emit( PSH, const_literal( n->value ) );
 		}
 
 		return true;
