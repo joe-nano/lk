@@ -22,11 +22,11 @@
 namespace lk {
 
 enum Opcode {
-	END, ADD, SUB, MUL, DIV, LT, GT, LE, GE, NE, EQ, INC, DEC, OR, AND, NOT, NEG, EXP, PSH, POP, ARG, CMP,
-	J, JF, JT, IDX, KEY, MAT, WAT, SET, GET, WR, REF, FREF, CALL, TCALL, SZ, KEYS, TYP, VEC, HASH, RET };
+	ADD, SUB, MUL, DIV, LT, GT, LE, GE, NE, EQ, INC, DEC, OR, AND, NOT, NEG, EXP, PSH, POP, ARG,
+	J, JF, JT, IDX, KEY, MAT, WAT, SET, GET, WR, REF, FREF, CALL, TCALL, RET, SZ, KEYS, TYP, VEC, HASH,
+	__InvalidOp };
 
 struct { Opcode op; const char *name; } op_table[] = {
-	{ END, "end" },
 	{ ADD, "add" },
 	{ SUB, "sub" },
 	{ MUL, "mul" },
@@ -47,7 +47,6 @@ struct { Opcode op; const char *name; } op_table[] = {
 	{ PSH, "psh" },
 	{ POP, "pop" },
 	{ ARG, "arg" },
-	{ CMP, "cmp" },
 	{ J, "j" },
 	{ JF, "jf" },
 	{ JT, "jt" },
@@ -62,21 +61,17 @@ struct { Opcode op; const char *name; } op_table[] = {
 	{ FREF, "fref" },
 	{ CALL, "call" },
 	{ TCALL, "tcall" },
+	{ RET, "ret" },
 	{ SZ, "sz" },
 	{ KEYS, "keys" },
 	{ TYP, "typ" },
 	{ VEC, "vec" },
 	{ HASH, "hash" },
-	{ RET, "ret" },
-	{ END, 0 } };
+	{ __InvalidOp, 0 } };
 
 class code_gen
 {
 private:
-	unordered_map< lk_string, int, lk_string_hash, lk_string_equal > m_labelAddr;
-	int m_labelCounter;
-	std::vector<lk_string> m_breakAddr, m_continueAddr;
-
 	struct instr {
 		instr( Opcode _op, int _arg, const lk_string &_id, const char *lbl = 0 )
 			: op(_op), arg(_arg), id(_id) {
@@ -119,10 +114,13 @@ private:
 	};
 
 	std::vector<instr> m_asm;
+	unordered_map< lk_string, int, lk_string_hash, lk_string_equal > m_labelAddr;
+	int m_labelCounter;
+	std::vector<lk_string> m_breakAddr, m_continueAddr;
 
 public:
 	code_gen() {
-		m_labelCounter = 0;
+		m_labelCounter = 1;
 	}
 	
 	lk_string assemble()
@@ -151,6 +149,20 @@ public:
 		}
 		return output;
 	}
+
+	bool build( lk::node_t *root )
+	{
+		m_asm.clear();
+		m_labelAddr.clear();
+		m_labelCounter = 0;
+		m_breakAddr.clear();
+		m_continueAddr.clear();
+		bool ok = pfgen(root);
+		place_label( "HALT" );
+		return ok;
+	}
+
+private:
 
 	lk_string new_label()
 	{
@@ -196,6 +208,7 @@ public:
 	}
 	*/
 	
+
 
 	bool pfgen( lk::node_t *root )
 	{
@@ -490,12 +503,13 @@ public:
 					p = p->next;
 				}
 
-				pfgen( n->left );
 				p = dynamic_cast<list_t*>( n->right );
 				int idx = 0;
 				while( p )
 				{
-					emit( CMP, idx );
+					pfgen( n->left );
+					emit( PSH,  0, "", (double)idx );
+					emit( EQ );
 					emit( JT, labels[idx] );
 					p = p->next;
 					idx++;
@@ -536,7 +550,7 @@ public:
 				break;
 
 			case expr_t::EXIT:
-				emit( END );
+				emit( J,  "HALT" );
 				break;
 
 			case expr_t::DEFINE:
@@ -547,10 +561,11 @@ public:
 				place_label( Lf );
 
 				list_t *p = dynamic_cast<list_t*>(n->left );
+				int iarg = 0;
 				while( p )
 				{
-					pfgen( p->item );
-					emit( ARG );
+					iden_t *id = dynamic_cast<iden_t*>( p->item );
+					emit( ARG, iarg++, id->name );
 					p = p->next;
 				}
 
@@ -651,7 +666,7 @@ public:
 			{
 				lk::pretty_print( output, node, 0 );
 				lk::code_gen cg;
-				if ( cg.pfgen( node ) ) assembly = cg.assemble();
+				if ( cg.build( node ) ) assembly = cg.assemble();
 				else assembly = "error in assembly generation";
 			}
 			else
