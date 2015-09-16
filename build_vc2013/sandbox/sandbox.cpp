@@ -10,13 +10,15 @@
 #include <wx/zstream.h>
 #include <wx/app.h>
 
-#include <lk_absyn.h>
-#include <lk_env.h>
-#include <lk_stdlib.h>
-#include <lk_eval.h>
-#include <lk_lex.h>
-#include <lk_invoke.h>
-#include <lk_parse.h>
+
+
+#include <../lk_absyn.h>
+#include <../lk_env.h>
+#include <../lk_stdlib.h>
+#include <../lk_eval.h>
+#include <../lk_lex.h>
+#include <../lk_invoke.h>
+#include <../lk_parse.h>
 
 
 namespace lk {
@@ -75,6 +77,7 @@ private:
 	struct instr {
 		instr( Opcode _op, int _arg, const char *lbl = 0 )
 			: op(_op), arg(_arg) {
+			srcln = 0;
 			label = 0;
 			if ( lbl ) label = new lk_string(lbl);
 		}
@@ -87,6 +90,7 @@ private:
 		}
 		void copy( const instr &cpy )
 		{
+			srcln = cpy.srcln;
 			op = cpy.op;
 			arg = cpy.arg;
 			label = 0;
@@ -102,10 +106,13 @@ private:
 		Opcode op;
 		int arg;
 		lk_string *label;
+		int srcln;
 	};
 
+	node_t *m_currentNode;
 	std::vector<instr> m_asm;
-	unordered_map< lk_string, int, lk_string_hash, lk_string_equal > m_labelAddr;
+	typedef unordered_map< lk_string, int, lk_string_hash, lk_string_equal > LabelMap;
+	LabelMap m_labelAddr;
 	std::vector< vardata_t > m_constData;
 	std::vector< lk_string > m_idList;
 	int m_labelCounter;
@@ -114,28 +121,59 @@ private:
 public:
 	code_gen() {
 		m_labelCounter = 1;
+		m_currentNode = 0;
 	}
 	
-	lk_string assemble()
+	void output( lk_string &assembly, lk_string &bytecode )
 	{
-		char buf[1024];
-		lk_string output;
+		char buf[128];		
 		
 		for( size_t i=0;i<m_asm.size();i++ )
 		{
 			instr &ip = m_asm[i];
 
 			if ( ip.label )
-				ip.arg = m_labelAddr[ *ip.label ];
+				m_asm[i].arg = m_labelAddr[ *ip.label ];
 
+			// determine if there's a label for this line (not super efficient)
+			for( LabelMap::iterator it = m_labelAddr.begin();
+				it != m_labelAddr.end();
+				++it )
+				if ( (int)i == it->second )
+					assembly += it->first + ":\n";
+
+			
 			size_t j=0;
 			while( op_table[j].name != 0 )
 			{
 				if ( ip.op == op_table[j].op )
 				{
-					sprintf(buf, "%6d: %4s (%02X)   %07d\n",
-						(int)i, op_table[j].name, (int)ip.op, ip.arg );
-					output += buf;
+					sprintf( buf, "%4d  %4s ", ip.srcln, op_table[j].name );
+					assembly += buf;
+
+					if ( ip.label )
+					{
+						assembly += (*ip.label);
+					}
+					else if ( ip.op == PSH )
+					{
+						assembly += m_constData[ip.arg].as_string();
+					}
+					else if ( ip.op == SET || ip.op == GET || ip.op == REF || ip.op == ARG )
+					{
+						assembly += m_idList[ip.arg];
+					}
+					else if ( ip.op == TCALL || ip.op == CALL || ip.op == VEC || ip.op == HASH )
+					{
+						sprintf(buf, "(%d)", ip.arg );
+						assembly += buf;
+					}
+
+					assembly += '\n';
+
+					unsigned int bc = (((unsigned int)ip.op)&0x000000FF) | (((unsigned int)ip.arg)<<8);
+					sprintf(buf, "0x%08X\n", bc);
+					bytecode += buf;
 					break;
 				}
 				j++;
@@ -143,16 +181,15 @@ public:
 		}
 		
 		for( size_t i=0;i<m_constData.size();i++ )
-			output += ".data " + m_constData[i].as_string() + "\n";
+			bytecode += ".data " + m_constData[i].as_string() + "\n";
 
 		for( size_t i=0;i<m_idList.size();i++ )
-			output += ".id " + m_idList[i] + "\n";
-
-		return output;
+			bytecode += ".id " + m_idList[i] + "\n";
 	}
 
 	bool build( lk::node_t *root )
 	{
+		m_currentNode = 0;
 		m_idList.clear();
 		m_constData.clear();
 		m_asm.clear();
@@ -179,6 +216,9 @@ private:
 
 	int place_const( vardata_t &d )
 	{
+		if ( d.type() == vardata_t::HASH && d.hash()->size() == 2 )
+			printf("stop here" );
+
 		for( size_t i=0;i<m_constData.size();i++ )
 			if ( m_constData[i].equals( d ) )
 				return (int)i;
@@ -213,18 +253,107 @@ private:
 	int emit( Opcode o, int arg = 0)
 	{
 		instr x( o, arg );
+		x.srcln = m_currentNode ? m_currentNode->line() : 0;
 		m_asm.push_back( x );
 		return m_asm.size();
 	}
 
 	int emit( Opcode o, const lk_string &L )
 	{
-		m_asm.push_back( instr(o, 0, (const char*) L.c_str()) );
+		instr x(o, 0, (const char*) L.c_str());
+		x.srcln = m_currentNode ? m_currentNode->line() : 0;
+		m_asm.push_back( x );
 		return m_asm.size();
+	}
+
+	bool initialize_const_vec( lk::list_t *v, vardata_t &vvec )
+	{
+		while( v )
+		{
+			if ( lk::constant_t *cc = dynamic_cast<constant_t*>(v->item) )				
+				vvec.vec_append( cc->value );
+			else if ( lk::literal_t *cc = dynamic_cast<literal_t*>(v->item) )
+				vvec.vec_append( cc->value );
+			else if ( lk::expr_t *expr = dynamic_cast<expr_t*>(v->item) )
+			{
+				if ( expr->oper == expr_t::INITVEC )
+				{
+					lk::vardata_t subvec;
+					subvec.empty_vector();
+					if ( !initialize_const_vec( dynamic_cast<list_t*>(expr->left), subvec ) )
+						return false;
+					vvec.vec()->push_back( subvec );
+				}
+				else if ( expr->oper == expr_t::INITHASH )
+				{
+					lk::vardata_t subhash;
+					subhash.empty_hash();
+					if ( !initialize_const_hash( dynamic_cast<list_t*>(expr->left), subhash ) )
+						return false;
+					vvec.vec()->push_back( subhash );
+				}
+				else
+					return false;
+			}
+			else
+				return false;
+
+			v = v->next;
+		}
+
+		return true;
+	}
+
+	bool initialize_const_hash( lk::list_t *v, vardata_t &vhash )
+	{
+		while( v )
+		{
+			expr_t *assign = dynamic_cast<expr_t*>(v->item);
+			if (assign && assign->oper == expr_t::ASSIGN)
+			{
+				lk_string key;
+				vardata_t val;
+				if ( lk::literal_t *pkey = dynamic_cast<literal_t*>(assign->left) ) key = pkey->value;
+				else return false;
+				
+				if ( lk::constant_t *cc = dynamic_cast<constant_t*>(assign->right) )				
+					val.assign( cc->value );
+				else if ( lk::literal_t *cc = dynamic_cast<literal_t*>(assign->right) )
+					val.assign( cc->value );
+				else if ( lk::expr_t *expr = dynamic_cast<expr_t*>(assign->right) )
+				{
+					if ( expr->oper == expr_t::INITVEC )
+					{
+						lk::vardata_t subvec;
+						subvec.empty_vector();
+						if ( !initialize_const_vec( dynamic_cast<list_t*>(expr->left), subvec ) )
+							return false;
+					}
+					else if ( expr->oper == expr_t::INITHASH )
+					{
+						lk::vardata_t subhash;
+						subhash.empty_hash();
+						if ( !initialize_const_hash( dynamic_cast<list_t*>(expr->left), subhash ) )
+							return false;
+					}
+					else
+						return false;
+				}
+
+				vhash.hash_item(key).copy( val );
+			}
+			else
+				return false;
+
+			v = v->next;
+		}
+
+		return true;
 	}
 
 	bool pfgen( lk::node_t *root )
 	{
+		m_currentNode = root;
 		if ( !root ) return true;
 
 		if ( list_t *n = dynamic_cast<list_t*>( root ) )
@@ -474,33 +603,51 @@ private:
 				break;
 			case expr_t::INITVEC:
 			{
-				int len = 0;
 				list_t *p = dynamic_cast<list_t*>( n->left );
-				while( p )
+				vardata_t cvec;
+				cvec.empty_vector();
+				if ( p && initialize_const_vec( p, cvec ) )
 				{
-					pfgen( p->item );
-					p = p->next;
-					len++;
+					emit( PSH, place_const( cvec ) );
 				}
-				emit( VEC, len );
+				else
+				{
+					int len = 0;
+					while( p )
+					{
+						pfgen( p->item );
+						p = p->next;
+						len++;
+					}
+					emit( VEC, len );
+				}
 			}
 				break;
 			case expr_t::INITHASH:
 			{
-				int npairs = 0;
 				list_t *p = dynamic_cast<list_t*>( n->left );
-				while (p)
+				vardata_t chash;
+				chash.empty_hash();
+				if ( p && initialize_const_hash( p, chash ) )
 				{
-					expr_t *assign = dynamic_cast<expr_t*>(p->item);
-					if (assign && assign->oper == expr_t::ASSIGN)
-					{
-						pfgen( assign->left );
-						pfgen( assign->right );
-					}
-					p = p->next;
-					npairs++;
+					emit( PSH, place_const( chash ) );
 				}
-				emit( HASH, npairs );
+				else
+				{
+					int npairs = 0;
+					while (p)
+					{
+						expr_t *assign = dynamic_cast<expr_t*>(p->item);
+						if (assign && assign->oper == expr_t::ASSIGN)
+						{
+							pfgen( assign->left );
+							pfgen( assign->right );
+						}
+						p = p->next;
+						npairs++;
+					}
+					emit( HASH, npairs );
+				}
 			}
 				break;
 			case expr_t::SWITCH:
@@ -620,11 +767,11 @@ private:
 
 }; // namespace lk
 
-enum { ID_CODE = wxID_HIGHEST+149, ID_PARSE, ID_ASM, ID_OUTPUT };
+enum { ID_CODE = wxID_HIGHEST+149, ID_PARSE, ID_ASM, ID_BYTECODE, ID_OUTPUT };
 
 class VMTestFrame : public wxFrame
 {
-	wxTextCtrl *m_code, *m_parse, *m_asm, *m_output;
+	wxTextCtrl *m_code, *m_parse, *m_asm, *m_bytecode, *m_output;
 public:
 	VMTestFrame() : wxFrame( NULL, wxID_ANY, "LK-VM", wxDefaultPosition, wxSize(1200,900) )
 	{
@@ -639,16 +786,21 @@ public:
 
 		m_asm = new wxTextCtrl( this, ID_ASM, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE );
 		m_asm->SetFont( font );
-		m_asm->SetForegroundColour( "Dark green" );
+		m_asm->SetForegroundColour( "Forest green" );
+		
+		m_bytecode = new wxTextCtrl( this, ID_BYTECODE, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE );
+		m_bytecode->SetFont( font );
+		m_bytecode->SetForegroundColour( "Maroon" );
 		
 		m_output = new wxTextCtrl( this, ID_OUTPUT, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE );
 		m_output->SetFont( font );
 		m_output->SetForegroundColour( "Dark green" );
 
 		wxBoxSizer *hsizer = new wxBoxSizer( wxHORIZONTAL );
-		hsizer->Add( m_code, 1, wxALL|wxEXPAND, 0 );
+		hsizer->Add( m_code, 2, wxALL|wxEXPAND, 0 );
 		hsizer->Add( m_parse, 1, wxALL|wxEXPAND, 0 );
-		hsizer->Add( m_asm, 1, wxALL|wxEXPAND, 0 );
+		hsizer->Add( m_asm, 2, wxALL|wxEXPAND, 0 );
+		hsizer->Add( m_bytecode, 1, wxALL|wxEXPAND, 0 );
 
 		wxBoxSizer *vsizer = new wxBoxSizer( wxVERTICAL );
 		vsizer->Add( hsizer, 3, wxALL|wxEXPAND, 0 );
@@ -668,7 +820,7 @@ public:
 
 	void ParseAndGenerateAssembly()
 	{
-		wxString output, assembly;
+		wxString output, assembly, bytecode;
 		lk::input_string input( m_code->GetValue() );
 		lk::parser parse( input );
 		if ( lk::node_t *node = parse.script() )
@@ -677,7 +829,7 @@ public:
 			{
 				lk::pretty_print( output, node, 0 );
 				lk::code_gen cg;
-				if ( cg.build( node ) ) assembly = cg.assemble();
+				if ( cg.build( node ) ) cg.output( assembly, bytecode );
 				else assembly = "error in assembly generation";
 			}
 			else
@@ -710,6 +862,7 @@ public:
 
 		m_parse->ChangeValue( output );
 		m_asm->ChangeValue( assembly );
+		m_bytecode->ChangeValue( bytecode );
 
 	}
 

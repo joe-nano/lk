@@ -244,12 +244,56 @@ bool lk::vardata_t::equals(vardata_t &rhs) const
 	{
 	case NULLVAL:
 		return true;
+
 	case NUMBER:
 		return m_u.v == rhs.m_u.v;
+
 	case STRING:
-		return str() == rhs.str();
+		return str() == rhs.str();		
+
+	case VECTOR:
+	{
+		size_t len = vec()->size();
+		if ( len != rhs.vec()->size() )
+			return false;
+		for( size_t i=0;i<len;i++ )
+			if ( !(*vec())[i].equals( (*rhs.vec())[i] ) )
+				return false;
+
+		return true;
+	}
+		break;
+
+	case HASH:
+	{
+		varhash_t *h1 = hash();
+		varhash_t *h2 = rhs.hash();
+
+		// if number of pairs is different, not equal
+		if ( h1->size() != h2->size() )
+			return false;
+
+		for( varhash_t::iterator it = h1->begin();
+			it != h1->end();
+			++it )
+		{
+			// if second hash doesn't have this key, not equal
+			varhash_t::iterator it2 = h2->find( it->first );
+			if ( it2 == h2->end() )
+				return false;
+
+			// if the values of this key are different, not equal
+			if ( ! it->second->equals( *it2->second ) )
+				return false;
+		}
+
+		return true;
+	}
+		break;
+
 	case FUNCTION:
 		return func() == rhs.func();
+
 	default:
 		return false;
 	}
