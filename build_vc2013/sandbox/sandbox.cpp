@@ -25,55 +25,411 @@ namespace lk {
 
 enum Opcode {
 	ADD, SUB, MUL, DIV, LT, GT, LE, GE, NE, EQ, INC, DEC, OR, AND, NOT, NEG, EXP, PSH, POP, ARG,
-	J, JF, JT, IDX, KEY, MAT, WAT, SET, GET, WR, REF, FREF, CALL, TCALL, RET, SZ, KEYS, TYP, VEC, HASH,
+	J, JF, JT, IDX, KEY, MAT, WAT, SET, GET, WR, RREF, NREF, CREF, FREF, CALL, TCALL, RET, SZ, KEYS, TYP, VEC, HASH,
 	__InvalidOp };
 
 struct { Opcode op; const char *name; } op_table[] = {
-	{ ADD, "add" },
-	{ SUB, "sub" },
-	{ MUL, "mul" },
-	{ DIV, "div" },
-	{ LT, "lt" },
-	{ GT, "gt" },
-	{ LE, "le" },
-	{ GE, "ge" },
-	{ NE, "ne" },
-	{ EQ, "eq" },
-	{ INC, "inc" },
-	{ DEC, "dec" },
-	{ OR, "or" },
-	{ AND, "and" },
-	{ NOT, "not" },
-	{ NEG, "neg" },
-	{ EXP, "exp" },
-	{ PSH, "psh" },
-	{ POP, "pop" },
+	{ ADD, "add" }, // impl
+	{ SUB, "sub" }, // impl
+	{ MUL, "mul" }, // impl
+	{ DIV, "div" }, // impl
+	{ LT, "lt" }, // impl
+	{ GT, "gt" }, // impl
+	{ LE, "le" }, // impl
+	{ GE, "ge" }, // impl
+	{ NE, "ne" }, // impl
+	{ EQ, "eq" }, // impl
+	{ INC, "inc" }, // impl
+	{ DEC, "dec" }, // impl
+	{ OR, "or" }, // impl
+	{ AND, "and" }, // impl
+	{ NOT, "not" }, // impl
+	{ NEG, "neg" }, // impl
+	{ EXP, "exp" }, // impl
+	{ PSH, "psh" }, // impl
+	{ POP, "pop" }, // impl
 	{ ARG, "arg" },
-	{ J, "j" },
-	{ JF, "jf" },
-	{ JT, "jt" },
-	{ IDX, "idx" },
-	{ KEY, "key" },
-	{ MAT, "mat" },
-	{ WAT, "wat" },
-	{ SET, "set" },
-	{ GET, "get" },
+	{ J, "j" }, // impl
+	{ JF, "jf" }, // impl
+	{ JT, "jt" }, // impl
+	{ IDX, "idx" }, // impl
+	{ KEY, "key" }, // impl
+	{ MAT, "mat" }, // impl
+	{ WAT, "wat" }, // impl
+	{ SET, "set" }, // impl
+	{ GET, "get" }, // impl
 	{ WR, "wr" },
-	{ REF, "ref" },
+	{ RREF, "rref" },
+	{ NREF, "nref" },
+	{ CREF, "cref" },
 	{ FREF, "fref" },
 	{ CALL, "call" },
 	{ TCALL, "tcall" },
 	{ RET, "ret" },
-	{ SZ, "sz" },
-	{ KEYS, "keys" },
+	{ SZ, "sz" }, // impl
+	{ KEYS, "keys" }, // impl
 	{ TYP, "typ" },
 	{ VEC, "vec" },
 	{ HASH, "hash" },
 	{ __InvalidOp, 0 } };
 
+class vm
+{
+	size_t ip, sp;
+	std::vector< vardata_t > stack;
+	std::vector< unsigned int > program;
+	std::vector< vardata_t > constants;
+	std::vector< lk_string > identifiers;
+	lk_string errStr;
+public:
+	vm( size_t ssize = 2048 )
+	{
+		ip = sp = 0;
+		stack.resize( ssize, vardata_t() );
+	}
+
+	virtual ~vm()
+	{
+	}
+
+	void load( const std::vector<unsigned int> &code,
+		const std::vector<vardata_t> &cnstvals,
+		const std::vector<lk_string> &ids )
+	{
+
+		ip = sp = 0;
+		program = code;
+		constants = cnstvals;
+		identifiers = ids;
+		stack.clear();
+	}
+	
+	bool special_set( const lk_string &name, vardata_t &val )
+	{
+		throw error_t( "no defined mechanism to set special variable '" + name + "'" );
+	}
+
+	bool special_get( const lk_string &name, vardata_t &val )
+	{
+		throw error_t( "no defined mechanism to get special variable '" + name + "'" );
+	}
+
+	enum ExecMode { NORMAL, DEBUG, SINGLE };
+
+#define CHECK_FOR_ARGS(n) if ( sp < n ) return error("stack [sp=%d] error, %d arguments required", sp, n );
+
+	bool run( ExecMode mode = NORMAL )
+	{
+		vardata_t nullval;
+		size_t nexecuted = 0;
+		const size_t code_size = program.size();
+		size_t next_ip = code_size;
+		vardata_t *lhs, *rhs;
+		try {
+			while ( ip < code_size )
+			{
+				Opcode op = (Opcode)(unsigned char)program[ip];
+				size_t arg = ( program[ip] >> 8 );
+				
+				next_ip = ip+1;
+			
+				rhs = ( sp >= 1 ) ? &stack[sp-1] : NULL;
+				lhs = ( sp >= 2 ) ? &stack[sp-2] : NULL;
+
+				vardata_t &rhs_deref( rhs ? rhs->deref() : nullval );
+				vardata_t &lhs_deref( lhs ? lhs->deref() : nullval );
+				vardata_t &result( lhs ? *lhs : *rhs );
+
+				switch( op )
+				{
+				case ADD:
+					CHECK_FOR_ARGS( 2 );
+					if ( lhs_deref.type() == vardata_t::STRING || lhs_deref.type() == vardata_t::STRING )
+						result.assign( lhs_deref.as_string() + rhs_deref.as_string() );
+					else
+						result.assign( lhs_deref.num() + rhs_deref.num() );
+					sp--;
+					break;
+				case SUB:
+					CHECK_FOR_ARGS( 2 );
+					result.assign( lhs_deref.num() - rhs_deref.num() );
+					sp--;
+					break;
+				case MUL:
+					CHECK_FOR_ARGS( 2 );
+					result.assign( lhs_deref.num() * rhs_deref.num() );
+					sp--;
+					break;
+				case DIV:
+					CHECK_FOR_ARGS( 2 );
+					if ( rhs_deref.num() == 0.0 )
+						result.assign( std::numeric_limits<double>::quiet_NaN() );
+					else
+						result.assign( lhs_deref.num() / rhs_deref.num() );
+					sp--;
+					break;
+				case EXP:
+					CHECK_FOR_ARGS( 2 );
+					result.assign( ::pow( lhs_deref.num() , rhs_deref.num() ) );
+					sp--;
+					break;
+				case LT:
+					CHECK_FOR_ARGS( 2 );
+					result.assign( lhs_deref.lessthan( rhs_deref ) ? 1.0 : 0.0 );
+					sp--;
+					break;
+				case LE:
+					CHECK_FOR_ARGS( 2 );
+					result.assign( ( lhs_deref.lessthan( rhs_deref )
+						|| lhs_deref.equals( rhs_deref ) ) ? 1.0 : 0.0 );
+					sp--;
+					break;
+				case GT:
+					CHECK_FOR_ARGS( 2 );
+					result.assign( ( !lhs_deref.lessthan( rhs_deref )
+						&& !lhs_deref.equals( rhs_deref ) )  ? 1.0 : 0.0  );
+					sp--;
+					break;
+				case GE:
+					CHECK_FOR_ARGS( 2 );
+					result.assign( !( lhs_deref.lessthan( rhs_deref ))  ? 1.0 : 0.0  );
+					sp--;
+					break;
+				case EQ:
+					CHECK_FOR_ARGS( 2 );
+					result.assign(  lhs_deref.equals( rhs_deref )  ? 1.0 : 0.0  );
+					sp--;
+					break;
+				case NE:
+					CHECK_FOR_ARGS( 2 );
+					result.assign(  lhs_deref.equals( rhs_deref )  ? 0.0 : 1.0  );
+					sp--;
+					break;
+				case OR:
+					CHECK_FOR_ARGS( 2 );
+					result.assign(  (((int)lhs_deref.num()) || ((int)rhs_deref.num() )) ? 1 : 0   );
+					sp--;
+					break;
+				case AND:
+					CHECK_FOR_ARGS( 2 );
+					result.assign(  (((int)lhs_deref.num()) && ((int)rhs_deref.num() )) ? 1 : 0   );
+					sp--;
+					break;
+				case INC:
+					CHECK_FOR_ARGS( 1 );
+					rhs_deref.assign( rhs_deref.num() + 1.0 );
+					result.copy( rhs_deref );
+					break;
+				case DEC:
+					CHECK_FOR_ARGS( 1 );
+					rhs_deref.assign( rhs_deref.num() - 1.0 );
+					result.copy( rhs_deref );
+					break;
+				case NOT:
+					CHECK_FOR_ARGS( 1 );
+					result.assign( ((int)rhs_deref.num()) ? 0 : 1 );
+					break;
+				case NEG:
+					CHECK_FOR_ARGS( 1 );
+					result.assign( 0.0 - rhs_deref.num() );
+					break;
+				case PSH:
+					if ( sp >= stack.size() ) return error("stack overflow [sp=%d]", stack.size());
+					if ( arg >= constants.size() ) return error( "invalid constant value address: %d\n", arg );
+					stack[sp++].copy( constants[arg] );
+					break;
+				case POP:
+					if ( sp > 0 ) sp--;
+					break;
+				case J:
+					next_ip = arg;
+					break;
+				case JT:
+					CHECK_FOR_ARGS( 1 );
+					if ( rhs_deref.as_boolean() ) next_ip = arg;
+					sp--;
+					break;
+				case JF:
+					CHECK_FOR_ARGS( 1 );
+					if ( !rhs_deref.as_boolean() ) next_ip = arg;
+					sp--;
+					break;
+				case IDX:
+					{
+						CHECK_FOR_ARGS( 2 );
+						size_t index = rhs_deref.as_unsigned();
+						vardata_t &arr = lhs_deref;
+						bool is_mutable = ( arg != 0 );
+						if ( is_mutable &&
+							( arr.type() != vardata_t::VECTOR
+							|| arr.length() <= index ) )
+							arr.resize( index + 1 );
+
+						result.assign( arr.index(index) );
+						sp--;
+					}
+					break;
+				case KEY:
+					{
+						CHECK_FOR_ARGS( 2 );
+						lk_string key( rhs_deref.as_string() );
+						vardata_t &hash = lhs_deref;
+						bool is_mutable = (arg != 0);
+						if ( is_mutable && hash.type() != vardata_t::HASH )
+							hash.empty_hash();
+
+						vardata_t *x = hash.lookup( key );
+						if ( !x ) hash.assign( key, x=new vardata_t );
+
+						result.assign( x );
+						sp--;
+					}
+					break;
+				case MAT:
+					CHECK_FOR_ARGS( 2 );
+					if ( lhs_deref.type() == vardata_t::HASH )
+					{
+						lk::varhash_t *hh = lhs_deref.hash();
+						lk::varhash_t::iterator it = hh->find( rhs_deref.as_string() );
+						if ( it != hh->end() )
+							hh->erase( it );
+					}
+					else if( lhs_deref.type() == vardata_t::VECTOR )
+					{
+						std::vector<lk::vardata_t> *vv = lhs_deref.vec();
+						size_t idx = rhs_deref.as_unsigned();
+						if ( idx < vv->size() )
+							vv->erase( vv->begin() + idx );
+					}
+					else
+						return error( "-@ requires a hash or vector" );
+
+					sp--;
+					break;
+
+				case WAT:
+					if ( lhs_deref.type() == vardata_t::HASH )
+					{
+						lk::varhash_t *hh = lhs_deref.hash();
+						result.assign( hh->find( rhs_deref.as_string() ) != hh->end() ? 1.0 : 0.0 );
+					}
+					else if ( lhs_deref.type() == vardata_t::VECTOR )
+					{
+						result.assign( -1.0 );
+						std::vector<lk::vardata_t> *vv = lhs_deref.vec();
+						for( size_t i=0;i<vv->size();i++ )
+						{
+							if ( (*vv)[i].equals( rhs_deref ) )
+							{
+								result.assign( (double)i );
+								break;
+							}
+						}
+					}
+					else if ( lhs_deref.type() == vardata_t::STRING )
+					{
+						lk_string::size_type pos = lhs_deref.str().find( rhs_deref.as_string() );
+						result.assign( pos!=lk_string::npos ? (int)pos : -1.0 );
+					}
+					else
+						return error("?@ requires a hash, vector, or string");
+				
+					sp--;
+					break;
+
+				case GET:
+					if ( sp >= stack.size() ) return error("stack overflow [sp=%d]", stack.size());
+					if ( arg >= identifiers.size() ) return error( "invalid identifier address: %d\n", arg );
+					if ( !special_get( identifiers[arg], stack[sp++] ) )
+						return error("failed to read external value '%s'", (const char*)identifiers[arg].c_str() );
+					break;
+
+				case SET:
+					CHECK_FOR_ARGS( 1 );
+					if ( arg >= identifiers.size() ) return error( "invalid identifier address: %d\n", arg );
+					if ( !special_set( identifiers[arg], rhs_deref ) )
+						return error("failed to write external value '%s'", (const char*)identifiers[arg].c_str() );
+					sp--;
+					break;
+				case SZ:
+					CHECK_FOR_ARGS( 1 );
+					if (rhs_deref.type() == vardata_t::VECTOR)
+						result.assign( (int) rhs_deref.length() );
+					else if (rhs_deref.type() == vardata_t::STRING)
+						result.assign( (int) rhs_deref.str().length() );
+					else if (rhs_deref.type() == vardata_t::HASH)
+					{
+						int count = 0;
+
+						varhash_t *h = rhs_deref.hash();
+						for( varhash_t::iterator it = h->begin();
+							it != h->end();
+							++it )
+						{
+							if ( (*it).second->deref().type() != vardata_t::NULLVAL )
+								count++;
+						}
+						result.assign( count );
+					}
+					else
+						return error( "operand to sizeof must be a array, string, or table type");
+
+					sp--;
+					break;
+				case KEYS:
+					CHECK_FOR_ARGS( 1 );
+					if (rhs_deref.type() == vardata_t::HASH)
+					{
+						varhash_t *h = rhs_deref.hash();
+						result.empty_vector();
+						result.vec()->reserve( h->size() );
+						for( varhash_t::iterator it = h->begin();
+							it != h->end();
+							++it )
+						{
+							if ( (*it).second->deref().type() != vardata_t::NULLVAL )
+								result.vec_append( (*it).first );
+						}
+						return true;
+					}
+					else
+						return error( "operand to @ (keysof) must be a table");
+					sp--;
+					break;
+
+				default:
+					return error( "invalid instruction (0x%02X)", (unsigned int)op );
+				};
+
+				ip = next_ip;
+
+				nexecuted++;
+				if ( mode == SINGLE && nexecuted > 0 ) return true;
+			}
+		} catch( std::exception &exc ) {
+			return error("runtime exception: %s", exc.what() );
+		}
+
+		return true;
+	}
+
+	lk_string error() { return errStr; }
+
+	bool error( const char *fmt, ... )
+	{
+		char buf[512];
+		va_list args;
+		va_start( args, fmt );
+		vsprintf( buf, fmt, args );
+		va_end( args );
+		errStr = buf;	
+		return false;
+	}
+};
+
 class code_gen
 {
-private:
+private:	
 	struct instr {
 		instr( Opcode _op, int _arg, const char *lbl = 0 )
 			: op(_op), arg(_arg) {
@@ -117,6 +473,22 @@ private:
 	std::vector< lk_string > m_idList;
 	int m_labelCounter;
 	std::vector<lk_string> m_breakAddr, m_continueAddr;
+	lk_string m_errStr;
+
+	bool error( const char *fmt, ... )
+	{
+		char buf[512];
+		va_list args;
+		va_start( args, fmt );
+		vsprintf( buf, fmt, args );
+		va_end( args );
+		m_errStr = buf;	
+		return false;
+	}
+
+	// context flags for pfgen()
+#define F_NONE 0x00
+#define F_MUTABLE 0x01
 
 public:
 	code_gen() {
@@ -124,6 +496,29 @@ public:
 		m_currentNode = 0;
 	}
 	
+	lk_string error() { return m_errStr; }
+	
+	size_t bytecode( std::vector<unsigned int> &bc, 
+		std::vector<vardata_t> &constData, 
+		std::vector<lk_string> &idList )
+	{
+		if ( m_asm.size() == 0 ) return 0;
+
+		bc.resize( m_asm.size(), 0 );
+
+		for( size_t i=0;i<m_asm.size();i++ )
+		{
+			instr &ip = m_asm[i];
+			if ( ip.label ) m_asm[i].arg = m_labelAddr[ *ip.label ];
+			bc[i] = (((unsigned int)ip.op)&0x000000FF) | (((unsigned int)ip.arg)<<8);
+		}
+
+		constData = m_constData;
+		idList = m_idList;
+
+		return m_asm.size();
+	}
+
 	void output( lk_string &assembly, lk_string &bytecode )
 	{
 		char buf[128];		
@@ -159,7 +554,7 @@ public:
 					{
 						assembly += m_constData[ip.arg].as_string();
 					}
-					else if ( ip.op == SET || ip.op == GET || ip.op == REF || ip.op == ARG )
+					else if ( ip.op == SET || ip.op == GET || ip.op == RREF || ip.op == NREF || ip.op == CREF || ip.op == ARG )
 					{
 						assembly += m_idList[ip.arg];
 					}
@@ -197,7 +592,7 @@ public:
 		m_labelCounter = 0;
 		m_breakAddr.clear();
 		m_continueAddr.clear();
-		bool ok = pfgen(root);
+		bool ok = pfgen(root, F_NONE );
 		place_label( "HALT" );
 		return ok;
 	}
@@ -351,7 +746,8 @@ private:
 		return true;
 	}
 
-	bool pfgen( lk::node_t *root )
+
+	bool pfgen( lk::node_t *root, unsigned int flags )
 	{
 		m_currentNode = root;
 		if ( !root ) return true;
@@ -360,7 +756,7 @@ private:
 		{
 			while( n )
 			{
-				if ( !pfgen( n->item ) )
+				if ( !pfgen( n->item, flags ) )
 					return false;
 
 				n=n->next;
@@ -368,7 +764,7 @@ private:
 		}
 		else if ( iter_t *n = dynamic_cast<iter_t*>( root ) )
 		{
-			if ( n->init && !pfgen( n->init ) ) return false;
+			if ( n->init && !pfgen( n->init, flags ) ) return false;
 
 			// labels for beginning and end of loop
 			lk_string Lb = new_label();
@@ -379,13 +775,13 @@ private:
 
 			place_label( Lb ) ;
 
-			if ( !pfgen( n->test ) ) return false;
+			if ( !pfgen( n->test, flags ) ) return false;
 
 			emit( JF, Le );
 			
-			pfgen( n->block );
+			pfgen( n->block, flags );
 
-			if ( n->adv && !pfgen( n->adv ) ) return false;
+			if ( n->adv && !pfgen( n->adv, flags ) ) return false;
 
 			emit( J, Lb );
 			place_label( Le );
@@ -398,15 +794,15 @@ private:
 			lk_string L1 = new_label();
 			lk_string L2 = L1;
 
-			pfgen( n->test );
+			pfgen( n->test, flags );
 			emit( JF, L1 );
-			pfgen( n->on_true );
+			pfgen( n->on_true, flags );
 			if ( n->on_false )
 			{
 				L2 = new_label();
 				emit( J, L2 );
 				place_label( L1 );
-				pfgen( n->on_false );
+				pfgen( n->on_false, flags );
 			}
 			place_label( L2 );
 		}
@@ -415,71 +811,71 @@ private:
 			switch( n->oper )
 			{
 			case expr_t::PLUS:
-				pfgen( n->left );
-				pfgen( n->right );
+				pfgen( n->left, flags );
+				pfgen( n->right, flags );
 				emit( ADD );
 				break;
 			case expr_t::MINUS:
-				pfgen( n->left );
-				pfgen( n->right );
+				pfgen( n->left, flags );
+				pfgen( n->right, flags );
 				emit( SUB );
 				break;
 			case expr_t::MULT:
-				pfgen( n->left );
-				pfgen( n->right );
+				pfgen( n->left, flags );
+				pfgen( n->right, flags );
 				emit( MUL );
 				break;
 			case expr_t::DIV:
-				pfgen( n->left );
-				pfgen( n->right );
+				pfgen( n->left, flags );
+				pfgen( n->right, flags );
 				emit( DIV );
 				break;
 			case expr_t::LT:
-				pfgen( n->left );
-				pfgen( n->right );
+				pfgen( n->left, flags );
+				pfgen( n->right, flags );
 				emit( LT );
 				break;
 			case expr_t::GT:
-				pfgen( n->left );
-				pfgen( n->right );
+				pfgen( n->left, flags );
+				pfgen( n->right, flags );
 				emit( GT );
 				break;
 			case expr_t::LE:
-				pfgen( n->left );
-				pfgen( n->right );
+				pfgen( n->left, flags );
+				pfgen( n->right, flags );
 				emit( LE );
 				break;
 			case expr_t::GE:
-				pfgen( n->left );
-				pfgen( n->right );
+				pfgen( n->left, flags );
+				pfgen( n->right, flags );
 				emit( GE );
 				break;
 			case expr_t::NE:
-				pfgen( n->left );
-				pfgen( n->right );
+				pfgen( n->left, flags );
+				pfgen( n->right, flags );
 				emit( NE );
 				break;
 			case expr_t::EQ:
-				pfgen( n->left );
-				pfgen( n->right );
+				pfgen( n->left, flags );
+				pfgen( n->right, flags );
 				emit( EQ );
 				break;
 			case expr_t::INCR:
-				pfgen( n->left );
+				pfgen( n->left, flags );
 				emit( INC );
 				break;
 			case expr_t::DECR:
-				pfgen( n->right );
+				pfgen( n->right, flags );
 				emit( DEC );
 				break;
 			case expr_t::LOGIOR:
 			{
 				lk_string Lsc = new_label();
-				pfgen(n->left );
+				pfgen(n->left, flags );
 				emit( PSH, const_value(0) );
 				emit( NE );
 				emit( JT, Lsc );
-				pfgen(n->right);
+				pfgen(n->right, flags);
 				emit( OR );
 				place_label( Lsc );
 			}
@@ -487,72 +883,79 @@ private:
 			case expr_t::LOGIAND:
 			{
 				lk_string Lsc = new_label();
-				pfgen(n->left );
+				pfgen(n->left, flags );
 				emit( PSH, const_value(0) );
 				emit( EQ );
 				emit( JT, Lsc );
-				pfgen(n->right );
+				pfgen(n->right, flags );
 				emit( OR );
 				place_label( Lsc );
 			}
 				break;
 			case expr_t::NOT:
-				pfgen(n->left);
+				pfgen(n->left, flags);
 				emit( NOT );
 				break;
 			case expr_t::NEG:
-				pfgen(n->left);
+				pfgen(n->left, flags);
 				emit( NEG );
 				break;				
 			case expr_t::EXP:
-				pfgen(n->left);
-				pfgen(n->right);
+				pfgen(n->left, flags);
+				pfgen(n->right, flags);
 				emit( EXP );
 				break;
 			case expr_t::INDEX:
-				pfgen(n->left);
-				pfgen(n->right);
-				emit( IDX );
+				pfgen(n->left, flags );
+				pfgen(n->right, F_NONE);
+				emit( IDX, flags&F_MUTABLE );
 				break;
 			case expr_t::HASH:
-				pfgen(n->left);
-				pfgen(n->right);
-				emit( KEY );
+				pfgen(n->left, flags);
+				pfgen(n->right, F_NONE);
+				emit( KEY, flags&F_MUTABLE );
 				break;
 			case expr_t::MINUSAT:
-				pfgen(n->left );
-				pfgen(n->right);
+				pfgen(n->left, F_NONE );
+				pfgen(n->right, flags);
 				emit( MAT );
 				break;
 			case expr_t::WHEREAT:
-				pfgen(n->left);
-				pfgen(n->right);
+				pfgen(n->left, F_NONE );
+				pfgen(n->right, flags);
 				emit( WAT );
 				break;
 			case expr_t::PLUSEQ:
-				pfgen(n->left);
-				pfgen(n->right);
+				pfgen(n->left, F_NONE);
+				pfgen(n->right, F_NONE);
 				emit( ADD );
-				pfgen(n->left);
+				pfgen(n->left, F_NONE);
 				emit( WR );
 				break;
 			case expr_t::MINUSEQ:
-				pfgen(n->left);
-				pfgen(n->right);
+				pfgen(n->left, F_NONE);
+				pfgen(n->right, F_NONE);
 				emit( SUB );
-				pfgen(n->left);
+				pfgen(n->left, F_NONE);
+				emit( WR );
+				break;
+			case expr_t::MULTEQ:
+				pfgen(n->left, F_NONE);
+				pfgen(n->right, F_NONE);
+				emit( MUL );
+				pfgen(n->left, F_NONE);
 				emit( WR );
 				break;
 			case expr_t::DIVEQ:
-				pfgen(n->left);
-				pfgen(n->right);
+				pfgen(n->left, F_NONE);
+				pfgen(n->right, F_NONE);
 				emit( DIV );
-				pfgen(n->left);
+				pfgen(n->left, F_NONE);
 				emit( WR );
 				break;
 			case expr_t::ASSIGN:
 				{
-					if ( !pfgen( n->right ) ) return false;
+					if ( !pfgen( n->right, flags ) ) return false;
 
 					bool sset = false;
 					// if on the LHS of the assignment we have a special variable i.e. ${xy}, use a 
@@ -566,7 +969,7 @@ private:
 						}
 					}
 
-					if ( !pfgen( n->left ) ) return false;
+					if ( !pfgen( n->left, F_MUTABLE ) ) return false;
 					emit( WR );
 				}
 				break;
@@ -580,25 +983,25 @@ private:
 																
 				while( p )
 				{
-					pfgen( p->item );
+					pfgen( p->item, F_NONE );
 					p = p->next;
 					nargs++;
 				}
 
-				pfgen( n->left );
+				pfgen( n->left, F_NONE );
 				emit( (n->oper == expr_t::THISCALL)? TCALL : CALL, nargs );
 			}
 				break;
 			case expr_t::SIZEOF:
-				pfgen( n->left );
+				pfgen( n->left, F_NONE );
 				emit( SZ );
 				break;
 			case expr_t::KEYSOF:
-				pfgen( n->left );
+				pfgen( n->left, F_NONE );
 				emit( KEYS );
 				break;
 			case expr_t::TYPEOF:
-				pfgen( n->left );
+				pfgen( n->left, F_NONE );
 				emit( TYP );
 				break;
 			case expr_t::INITVEC:
@@ -615,7 +1018,7 @@ private:
 					int len = 0;
 					while( p )
 					{
-						pfgen( p->item );
+						pfgen( p->item, F_NONE );
 						p = p->next;
 						len++;
 					}
@@ -640,8 +1043,8 @@ private:
 						expr_t *assign = dynamic_cast<expr_t*>(p->item);
 						if (assign && assign->oper == expr_t::ASSIGN)
 						{
-							pfgen( assign->left );
-							pfgen( assign->right );
+							pfgen( assign->left, F_NONE );
+							pfgen( assign->right, F_NONE );
 						}
 						p = p->next;
 						npairs++;
@@ -665,7 +1068,7 @@ private:
 				int idx = 0;
 				while( p )
 				{
-					pfgen( n->left );
+					pfgen( n->left, F_NONE );
 					emit( PSH,  const_value(idx) );
 					emit( EQ );
 					emit( JT, labels[idx] );
@@ -680,7 +1083,7 @@ private:
 				while( p )
 				{
 					place_label( labels[idx] );
-					pfgen( p->item );
+					pfgen( p->item, F_NONE );
 					emit( J, Le );
 					p = p->next;
 				}
@@ -690,7 +1093,7 @@ private:
 				break;
 
 			case expr_t::RETURN:
-				pfgen(n->left);
+				pfgen(n->left, F_NONE );
 				emit( RET );
 				break;
 
@@ -727,7 +1130,7 @@ private:
 					p = p->next;
 				}
 
-				pfgen( n->right );
+				pfgen( n->right, F_NONE );
 
 				if ( m_asm.back().op != RET )
 					emit( RET );
@@ -750,7 +1153,13 @@ private:
 				return true;
 			}
 			else
-				emit( REF, place_identifier(n->name) );
+			{
+				Opcode op = RREF;
+				if ( n->common ) op = CREF;
+				else if ( flags & F_MUTABLE ) op = NREF;
+
+				emit( op, place_identifier(n->name) );
+			}
 		}
 		else if ( constant_t *n = dynamic_cast<constant_t*>(root ) )
 		{

@@ -101,7 +101,12 @@ namespace lk {
 			return *this;
 		}
 
-		vardata_t &deref() const throw (error_t);
+		inline vardata_t &deref() const throw (error_t) {
+			vardata_t *p = const_cast<vardata_t*>(this);
+			while ( p->type() == REFERENCE ) p = p->ref();
+			if (!p) throw error_t("dereference resulted in null target");
+			return *p;
+		}
 		
 		void assign( double d ) throw( error_t );
 		void assign( const char *s ) throw( error_t );

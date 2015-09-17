@@ -110,13 +110,15 @@ lk_string lk::vardata_t::as_string() const
 		{
 			register std::vector<vardata_t> &v = *reinterpret_cast< std::vector<vardata_t>* >(m_u.p);
 
-			lk_string s;
+			lk_string s( "[ " );
 			for ( size_t i=0;i<v.size();i++ )
 			{
 				s += v[i].as_string();
 				if ( v.size() > 1 && i < v.size()-1 )
-					s += ",";
+					s += ", ";
 			}
+
+			s += " ]";
 			
 			return s;
 		}
@@ -355,17 +357,6 @@ void lk::vardata_t::nullify()
 	}
 
 	set_type( NULLVAL );
-}
-
-lk::vardata_t &lk::vardata_t::deref() const throw (error_t)
-{
-	vardata_t *p = const_cast<vardata_t*>(this);
-	while (p->type() == REFERENCE)
-		p = p->ref();
-
-	if (!p) throw error_t("dereference resulted in null target");
-
-	return *p;
 }
 
 void lk::vardata_t::assign( double d ) throw( error_t )
