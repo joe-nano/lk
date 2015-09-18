@@ -158,7 +158,7 @@ namespace lk
 		bool common;
 		bool constval;
 		bool special;
-		iden_t(int line, const lk_string &n, bool com, bool cons, bool speci) : node_t(line), name(n), common(com), constval(cons), special(speci) {  }
+		iden_t(int line, const lk_string &n, bool cons, bool speci) : node_t(line), name(n), constval(cons), special(speci) {  }
 		virtual ~iden_t() { }
 	};
 				

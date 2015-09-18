@@ -6,6 +6,7 @@
 #include <wx/webview.h>
 #include <wx/statbmp.h>
 #include <wx/numformatter.h>
+#include <wx/tokenzr.h>
 #include <wx/grid.h>
 #include <wx/zstream.h>
 #include <wx/app.h>
@@ -24,7 +25,7 @@
 namespace lk {
 
 enum Opcode {
-	ADD, SUB, MUL, DIV, LT, GT, LE, GE, NE, EQ, INC, DEC, OR, AND, NOT, NEG, EXP, PSH, POP, ARG,
+	ADD, SUB, MUL, DIV, LT, GT, LE, GE, NE, EQ, INC, DEC, OR, AND, NOT, NEG, EXP, PSH, POP, DUP, ARG,
 	J, JF, JT, IDX, KEY, MAT, WAT, SET, GET, WR, RREF, NREF, CREF, FREF, CALL, TCALL, RET, SZ, KEYS, TYP, VEC, HASH,
 	__InvalidOp };
 
@@ -48,6 +49,7 @@ struct { Opcode op; const char *name; } op_table[] = {
 	{ EXP, "exp" }, // impl
 	{ PSH, "psh" }, // impl
 	{ POP, "pop" }, // impl
+	{ DUP, "dup", }, // impl
 	{ ARG, "arg" },
 	{ J, "j" }, // impl
 	{ JF, "jf" }, // impl
@@ -58,50 +60,81 @@ struct { Opcode op; const char *name; } op_table[] = {
 	{ WAT, "wat" }, // impl
 	{ SET, "set" }, // impl
 	{ GET, "get" }, // impl
-	{ WR, "wr" },
-	{ RREF, "rref" },
-	{ NREF, "nref" },
-	{ CREF, "cref" },
-	{ FREF, "fref" },
-	{ CALL, "call" },
-	{ TCALL, "tcall" },
-	{ RET, "ret" },
+	{ WR, "wr" }, // impl
+	{ RREF, "rref" }, // impl
+	{ NREF, "nref" }, // impl
+	{ CREF, "cref" }, // impl
+	{ FREF, "fref" }, // impl
+	{ CALL, "call" }, // impl
+	{ TCALL, "tcall" }, // impl
+	{ RET, "ret" }, // impl
 	{ SZ, "sz" }, // impl
 	{ KEYS, "keys" }, // impl
-	{ TYP, "typ" },
+	{ TYP, "typ" }, // impl
 	{ VEC, "vec" },
 	{ HASH, "hash" },
 	{ __InvalidOp, 0 } };
 
 class vm
 {
+public:
+	struct frame {
+		frame( lk::env_t *parent, size_t fptr, size_t ret, size_t na )
+			: env( parent ), fp(fptr), retaddr(ret), nargs(na), iarg(0), thiscall( false )
+		{
+		}
+
+		lk::env_t env;
+		size_t fp;
+		size_t retaddr;
+		size_t nargs;
+		size_t iarg;
+		bool thiscall;
+	};
+
+private:
 	size_t ip, sp;
 	std::vector< vardata_t > stack;
 	std::vector< unsigned int > program;
 	std::vector< vardata_t > constants;
 	std::vector< lk_string > identifiers;
+	std::vector< frame > frames;
 	lk_string errStr;
+
 public:
 	vm( size_t ssize = 2048 )
 	{
 		ip = sp = 0;
 		stack.resize( ssize, vardata_t() );
+		frames.reserve( 16 );
 	}
 
 	virtual ~vm()
 	{
 	}
 
+	size_t get_ip() { return ip; }
+
+	frame *get_frames( size_t *nfrm ) {
+		*nfrm = frames.size();
+		if ( frames.size() > 0 ) return &frames[0];
+		else return 0;
+	}
+
+	vardata_t *get_stack( size_t *psp ) {
+		*psp = sp;
+		return &stack[0];
+	}
+
 	void load( const std::vector<unsigned int> &code,
 		const std::vector<vardata_t> &cnstvals,
 		const std::vector<lk_string> &ids )
 	{
-
-		ip = sp = 0;
 		program = code;
 		constants = cnstvals;
 		identifiers = ids;
-		stack.clear();
+
+		restart();
 	}
 	
 	bool special_set( const lk_string &name, vardata_t &val )
@@ -117,9 +150,24 @@ public:
 	enum ExecMode { NORMAL, DEBUG, SINGLE };
 
 #define CHECK_FOR_ARGS(n) if ( sp < n ) return error("stack [sp=%d] error, %d arguments required", sp, n );
+#define CHECK_OVERFLOW() if ( sp >= stack.size() ) return error("stack overflow [sp=%d]", stack.size())
+#define CHECK_CONSTANT() if ( arg >= constants.size() ) return error( "invalid constant value address: %d\n", arg )
+#define CHECK_IDENTIFIER() if ( arg >= identifiers.size() ) return error( "invalid identifier address: %d\n", arg )
 
-	bool run( ExecMode mode = NORMAL )
+	void restart()
 	{
+		errStr.clear();
+		ip = sp = 0;
+		for( size_t i=0;i<stack.size();i++ )
+			stack[i].nullify();
+		frames.clear();
+	}
+
+	bool run( ExecMode mode = NORMAL, lk::env_t *env = 0 )
+	{
+		if ( frames.size() == 0 )
+			frames.push_back( frame( env, 0, 0, 0 ) );
+
 		vardata_t nullval;
 		size_t nexecuted = 0;
 		const size_t code_size = program.size();
@@ -234,12 +282,13 @@ public:
 					result.assign( 0.0 - rhs_deref.num() );
 					break;
 				case PSH:
-					if ( sp >= stack.size() ) return error("stack overflow [sp=%d]", stack.size());
-					if ( arg >= constants.size() ) return error( "invalid constant value address: %d\n", arg );
+					CHECK_OVERFLOW();
+					CHECK_CONSTANT();
 					stack[sp++].copy( constants[arg] );
 					break;
 				case POP:
-					if ( sp > 0 ) sp--;
+					if ( sp == 0 ) return error("stack corruption at level 0");
+					sp--;
 					break;
 				case J:
 					next_ip = arg;
@@ -338,15 +387,15 @@ public:
 					break;
 
 				case GET:
-					if ( sp >= stack.size() ) return error("stack overflow [sp=%d]", stack.size());
-					if ( arg >= identifiers.size() ) return error( "invalid identifier address: %d\n", arg );
+					CHECK_OVERFLOW();
+					CHECK_IDENTIFIER();
 					if ( !special_get( identifiers[arg], stack[sp++] ) )
 						return error("failed to read external value '%s'", (const char*)identifiers[arg].c_str() );
 					break;
 
 				case SET:
 					CHECK_FOR_ARGS( 1 );
-					if ( arg >= identifiers.size() ) return error( "invalid identifier address: %d\n", arg );
+					CHECK_IDENTIFIER();
 					if ( !special_set( identifiers[arg], rhs_deref ) )
 						return error("failed to write external value '%s'", (const char*)identifiers[arg].c_str() );
 					sp--;
@@ -354,9 +403,9 @@ public:
 				case SZ:
 					CHECK_FOR_ARGS( 1 );
 					if (rhs_deref.type() == vardata_t::VECTOR)
-						result.assign( (int) rhs_deref.length() );
+						rhs->assign( (int) rhs_deref.length() );
 					else if (rhs_deref.type() == vardata_t::STRING)
-						result.assign( (int) rhs_deref.str().length() );
+						rhs->assign( (int) rhs_deref.str().length() );
 					else if (rhs_deref.type() == vardata_t::HASH)
 					{
 						int count = 0;
@@ -369,12 +418,11 @@ public:
 							if ( (*it).second->deref().type() != vardata_t::NULLVAL )
 								count++;
 						}
-						result.assign( count );
+						rhs->assign( count );
 					}
 					else
 						return error( "operand to sizeof must be a array, string, or table type");
 
-					sp--;
 					break;
 				case KEYS:
 					CHECK_FOR_ARGS( 1 );
@@ -396,7 +444,153 @@ public:
 						return error( "operand to @ (keysof) must be a table");
 					sp--;
 					break;
+				case WR:
+					CHECK_FOR_ARGS( 2 );
+					rhs_deref.copy( lhs_deref );
+					sp--; sp--;
+					break;
 
+				case RREF:
+				case CREF:
+				case NREF:
+					CHECK_OVERFLOW();
+					CHECK_IDENTIFIER();
+
+					if ( fcallinfo_t *fci = frames.back().env.lookup_func( identifiers[arg] ) )
+					{
+						stack[sp++].assign_fcall( fci );
+					}
+					else if ( vardata_t *x = frames.back().env.lookup( identifiers[arg], op == RREF ) )
+					{
+						stack[sp++].assign( x );
+					}
+					else if ( op == CREF || op == NREF )
+					{
+						vardata_t *x = new vardata_t;
+						if ( op == CREF )
+						{
+							x->set_flag( vardata_t::CONSTVAL );
+							x->clear_flag( vardata_t::ASSIGNED );
+						}
+						frames.back().env.assign( identifiers[arg], x );
+						stack[sp++].assign( x );
+					}
+					else
+						return error("referencing unassigned variable: %s\n", (const char*)identifiers[arg].c_str() );
+
+					break;
+
+				case TYP:
+					CHECK_OVERFLOW();
+					CHECK_IDENTIFIER();
+
+					if ( vardata_t *x = frames.back().env.lookup( identifiers[arg], true ) )
+						stack[sp++].assign( x->typestr() );
+					else
+						stack[sp++].assign( "unknown" );
+					break;
+
+				case FREF:
+					CHECK_OVERFLOW();
+					stack[sp++].assign_faddr( arg );
+					break;
+				
+				case CALL:
+				case TCALL:
+				{
+					CHECK_FOR_ARGS( arg+1 );
+					if ( vardata_t::EXTFUNC == rhs_deref.type() && op == CALL )
+					{
+						fcallinfo_t *fci = rhs_deref.fcall();
+						invoke_t cxt( &frames.back().env, result, fci->user_data );
+
+						for( size_t i=0;i<arg;i++ )
+							cxt.arg_list().push_back( stack[sp-arg-1+i] );						
+							
+						try {
+							if ( fci->f ) (*(fci->f))( cxt );
+							else if ( fci->f_ext ) lk::external_call( fci->f_ext, cxt );
+							else cxt.error( "invalid internal reference to function" );
+
+							sp -= (arg+1);
+							stack[sp-1].copy( cxt.result().deref() );
+						}
+						catch( std::exception &e )
+						{
+							return error( e.what() );
+						}
+					}
+					else if ( vardata_t::INTFUNC == rhs_deref.type() )
+					{
+						frames.push_back( frame( &frames.back().env, sp, next_ip, arg ) );
+						frame &F = frames.back();
+						
+						
+						vardata_t *__args = new vardata_t;
+						__args->empty_vector();
+
+						size_t offset = 1;						
+						if ( op == TCALL )
+						{
+							offset = 2;
+							F.env.assign( "this", new vardata_t( stack[sp-2] ) );
+							F.thiscall = true;
+						}
+
+						for( size_t i=0;i<arg;i++ )
+							__args->vec()->push_back( stack[sp-arg-offset+i] );		
+						
+						F.env.assign( "__args", __args );
+
+						next_ip = rhs_deref.faddr(); 
+					}
+					else
+						return error("invalid function access");
+				}
+					break;
+
+				case ARG:
+					if ( frames.size() > 0 )
+					{
+						frame &F = frames.back();
+						if ( F.iarg >= F.nargs )
+							return error("too few arguments passed to function");
+
+						size_t offset = F.thiscall ? 2 : 1;
+						size_t idx = F.fp - F.nargs - offset + F.iarg;
+
+						vardata_t *x = new vardata_t;
+						x->assign( &stack[idx] );
+						F.env.assign( identifiers[arg], x );
+						F.iarg++;
+					}
+					break;
+
+				case RET:
+					if ( frames.size() > 1 )
+					{
+						vardata_t *result = &stack[sp-1];
+						frame &F = frames.back();
+						size_t ncleanup = F.nargs + 1;
+						if ( F.thiscall ) ncleanup++;
+
+						if ( sp < ncleanup ) return error("stack corruption upon function return");
+						sp -= ncleanup;
+						stack[sp-1].copy( result->deref() );
+						next_ip = F.retaddr;						
+						frames.pop_back();
+					}
+					else
+						next_ip = code_size;
+
+					break;
+
+				case DUP:
+					CHECK_OVERFLOW();
+					stack[sp].copy( stack[sp-1] );
+					sp++;
+					break;
+					
 				default:
 					return error( "invalid instruction (0x%02X)", (unsigned int)op );
 				};
@@ -530,12 +724,20 @@ public:
 			if ( ip.label )
 				m_asm[i].arg = m_labelAddr[ *ip.label ];
 
+			bool has_label = false;
 			// determine if there's a label for this line (not super efficient)
 			for( LabelMap::iterator it = m_labelAddr.begin();
 				it != m_labelAddr.end();
 				++it )
 				if ( (int)i == it->second )
-					assembly += it->first + ":\n";
+				{
+					sprintf(buf, "%4s:", (const char*)it->first.c_str() );
+					assembly += buf;
+					has_label = true;
+				}
+
+			if ( !has_label )
+				assembly += "     ";
 
 			
 			size_t j=0;
@@ -758,6 +960,14 @@ private:
 			{
 				if ( !pfgen( n->item, flags ) )
 					return false;
+
+				bool pop_expr_result = true;
+				if (expr_t *e = dynamic_cast<expr_t*>(n->item))
+					if ( e->oper == expr_t::ASSIGN )
+						pop_expr_result = false;
+
+				if ( pop_expr_result )
+					emit( POP );
 
 				n=n->next;
 			}
@@ -988,7 +1198,18 @@ private:
 					nargs++;
 				}
 
-				pfgen( n->left, F_NONE );
+				expr_t *lexpr = dynamic_cast<expr_t*>(n->left);
+				if ( n->oper == expr_t::THISCALL && 0 != lexpr )
+				{
+
+					pfgen( lexpr->left, F_NONE );
+					emit( DUP );
+					pfgen( lexpr->right, F_NONE );
+					emit( KEY );
+				}
+				else
+					pfgen( n->left, F_NONE );
+
 				emit( (n->oper == expr_t::THISCALL)? TCALL : CALL, nargs );
 			}
 				break;
@@ -1001,8 +1222,10 @@ private:
 				emit( KEYS );
 				break;
 			case expr_t::TYPEOF:
-				pfgen( n->left, F_NONE );
-				emit( TYP );
+				if ( iden_t *iden = dynamic_cast<iden_t*>( n->left ) )
+					emit( TYP, place_identifier( iden->name ) );
+				else
+					return error( "invalid typeof expression, identifier required" );
 				break;
 			case expr_t::INITVEC:
 			{
@@ -1155,7 +1378,7 @@ private:
 			else
 			{
 				Opcode op = RREF;
-				if ( n->common ) op = CREF;
+				if ( n->constval && flags & F_MUTABLE ) op = CREF;
 				else if ( flags & F_MUTABLE ) op = NREF;
 
 				emit( op, place_identifier(n->name) );
@@ -1176,15 +1399,33 @@ private:
 
 }; // namespace lk
 
-enum { ID_CODE = wxID_HIGHEST+149, ID_PARSE, ID_ASM, ID_BYTECODE, ID_OUTPUT };
+enum { ID_CODE = wxID_HIGHEST+149, ID_PARSE, ID_ASM, ID_BYTECODE, ID_OUTPUT, ID_DEBUG,
+	ID_LOAD, ID_RESET, ID_STEP1, ID_RUN };
 
 class VMTestFrame : public wxFrame
 {
-	wxTextCtrl *m_code, *m_parse, *m_asm, *m_bytecode, *m_output;
+	wxTextCtrl *m_code, *m_parse, *m_bytecode, *m_output, *m_error, *m_debug;
+	wxListBox *m_asm;
+	lk::vm vm;
+
+	std::vector<unsigned int> program;
+	std::vector<lk::vardata_t> constants;
+	std::vector<lk_string> identifiers;
+	lk::env_t runenv;
 public:
 	VMTestFrame() : wxFrame( NULL, wxID_ANY, "LK-VM", wxDefaultPosition, wxSize(1200,900) )
 	{
+		runenv.register_func( output_cb, this );
+
 		wxFont font( 12, wxFONTFAMILY_MODERN, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Consolas" );
+
+		wxBoxSizer *buttons = new wxBoxSizer( wxHORIZONTAL );
+		buttons->Add( new wxButton( this, ID_LOAD, "Load bytecode"), 0, wxALL|wxEXPAND, 3 );
+		buttons->Add( new wxButton( this, ID_RESET, "Reset VM"), 0, wxALL|wxEXPAND, 3 );
+		buttons->Add( new wxButton( this, ID_STEP1, "Step 1 OP"), 0, wxALL|wxEXPAND, 3 );
+		buttons->Add( new wxButton( this, ID_RUN, "Run VM"), 0, wxALL|wxEXPAND, 3 );
+		buttons->Add( m_error=new wxTextCtrl( this, wxID_ANY, "ready."), 1, wxALL|wxALIGN_CENTER_VERTICAL, 3 );
+		m_error->SetForegroundColour( *wxRED );
 
 		m_code = new wxTextCtrl( this, ID_CODE, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE );
 		m_code->SetFont( font );
@@ -1193,7 +1434,7 @@ public:
 		m_parse->SetFont( font );
 		m_parse->SetForegroundColour( *wxBLUE );
 
-		m_asm = new wxTextCtrl( this, ID_ASM, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE );
+		m_asm = new wxListBox( this, ID_ASM );
 		m_asm->SetFont( font );
 		m_asm->SetForegroundColour( "Forest green" );
 		
@@ -1202,8 +1443,11 @@ public:
 		m_bytecode->SetForegroundColour( "Maroon" );
 		
 		m_output = new wxTextCtrl( this, ID_OUTPUT, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE );
-		m_output->SetFont( font );
 		m_output->SetForegroundColour( "Dark green" );
+		
+		m_debug = new wxTextCtrl( this, ID_DEBUG, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE );
+		m_debug->SetFont( font );
+		m_debug->SetForegroundColour( "Maroon" );
 
 		wxBoxSizer *hsizer = new wxBoxSizer( wxHORIZONTAL );
 		hsizer->Add( m_code, 2, wxALL|wxEXPAND, 0 );
@@ -1211,9 +1455,16 @@ public:
 		hsizer->Add( m_asm, 2, wxALL|wxEXPAND, 0 );
 		hsizer->Add( m_bytecode, 1, wxALL|wxEXPAND, 0 );
 
+
+		wxBoxSizer *tsizer = new wxBoxSizer( wxHORIZONTAL );
+		tsizer->Add( m_debug, 2, wxALL|wxEXPAND, 0 );
+		tsizer->Add( m_output, 1, wxALL|wxEXPAND, 0 );
+
+		
 		wxBoxSizer *vsizer = new wxBoxSizer( wxVERTICAL );
+		vsizer->Add( buttons, 0, wxALL|wxEXPAND, 0 );		
 		vsizer->Add( hsizer, 3, wxALL|wxEXPAND, 0 );
-		vsizer->Add( m_output, 1, wxALL|wxEXPAND, 0 );
+		vsizer->Add( tsizer, 1, wxALL|wxEXPAND, 0 );
 		SetSizer(vsizer);
 
 		m_code->LoadFile( wxGetHomeDir() + "/.lk-vm-code" );
@@ -1222,10 +1473,46 @@ public:
 
 	static void output_cb( lk::invoke_t &cxt )
 	{
-		LK_DOC("out", "output data", "none" );
+		LK_DOC("outln", "output data", "none" );
 		VMTestFrame *frm = (VMTestFrame*)cxt.user_data();
-		frm->m_output->AppendText( cxt.arg(0).as_string() );
+		frm->m_output->AppendText( cxt.arg(0).as_string() + "\n");
 	}
+
+	void UpdateVMView()
+	{
+		if ( vm.get_ip() < m_asm->GetCount() )
+			m_asm->SetSelection( vm.get_ip() );
+		
+		size_t sp = 0;
+		lk::vardata_t *stack = vm.get_stack( &sp );
+		wxString sout = wxString::Format("[%d]:\n", (int)sp);
+		for( size_t i=0;i<sp;i++ )
+		{
+			lk::vardata_t &sval = stack[sp-i-1];
+			sout += "\t" + sval.as_string() + "\t\t(" + sval.typestr() + ")\n";
+		}
+		sout += "----------------\n\n";
+
+		size_t nfrm = 0;
+		lk::vm::frame *frames = vm.get_frames( &nfrm );
+		for( size_t i=0;i<nfrm;i++ )
+		{
+			lk::vm::frame &F = frames[nfrm-i-1];
+			sout += wxString::Format( "frame[%d] ret=%d fp=%d iarg=%d narg=%d %s\n", 
+				nfrm-i-1, F.retaddr, F.fp, F.iarg, F.nargs, F.thiscall ? "(thiscall)" : "" );
+			lk_string key;
+			lk::vardata_t *val;
+			bool has_more = F.env.first( key, val );
+			while( has_more )
+			{
+				sout += "\t" + key + "=" + val->as_string() + "\t\t(" + val->typestr() + ")\n";
+				has_more = F.env.next( key, val );
+			}
+		}
+
+		m_debug->ChangeValue( sout );
+	}
+
 
 	void ParseAndGenerateAssembly()
 	{
@@ -1238,7 +1525,10 @@ public:
 			{
 				lk::pretty_print( output, node, 0 );
 				lk::code_gen cg;
-				if ( cg.build( node ) ) cg.output( assembly, bytecode );
+				if ( cg.build( node ) ) {
+					cg.output( assembly, bytecode );
+					cg.bytecode( program, constants, identifiers );
+				}
 				else assembly = "error in assembly generation";
 			}
 			else
@@ -1270,7 +1560,10 @@ public:
 
 
 		m_parse->ChangeValue( output );
-		m_asm->ChangeValue( assembly );
+		m_asm->Freeze();
+		m_asm->Clear();
+		m_asm->Append( wxStringTokenize(assembly, "\n") );
+		m_asm->Thaw();
 		m_bytecode->ChangeValue( bytecode );
 
 	}
@@ -1283,8 +1576,35 @@ public:
 
 	void OnCommand( wxCommandEvent &evt )
 	{
-		if ( evt.GetId() == ID_CODE )
+		switch( evt.GetId() )
+		{
+		case ID_CODE:
 			ParseAndGenerateAssembly();
+			break;
+		case ID_LOAD:
+			vm.load( program, constants, identifiers );
+			m_debug->ChangeValue(
+				wxString::Format("vm loaded %d instructions, %d constants, %d identifiers.\n",
+					(int) program.size(), (int)constants.size(), (int)identifiers.size() ) );
+			m_output->Clear();
+			vm.restart();
+			UpdateVMView();
+			break;
+		case ID_RESET:
+			vm.restart();
+			UpdateVMView();
+			break;
+		case ID_STEP1:			
+			vm.run( lk::vm::SINGLE, &runenv );
+			m_error->ChangeValue( vm.error() );			
+			UpdateVMView();
+			break;
+		case ID_RUN:
+			vm.run( lk::vm::NORMAL, &runenv );
+			m_error->ChangeValue( vm.error() );			
+			UpdateVMView();
+			break;
+		}
 	}
 
 	DECLARE_EVENT_TABLE()
@@ -1293,6 +1613,7 @@ public:
 BEGIN_EVENT_TABLE( VMTestFrame, wxFrame )
 	EVT_CLOSE( VMTestFrame::OnClose )
 	EVT_TEXT( ID_CODE, VMTestFrame::OnCommand )
+	EVT_BUTTON( wxID_ANY, VMTestFrame::OnCommand )
 END_EVENT_TABLE()
 
 

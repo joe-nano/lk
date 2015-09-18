@@ -206,7 +206,7 @@ lk::node_t *lk::parser::statement()
 		node_t *b = block();
 		
 		return new expr_t( line(), expr_t::ASSIGN,
-			new iden_t( line(), name, true, true, false ), 
+			new iden_t( line(), name, true, false ), 
 			new expr_t( line(), expr_t::DEFINE,
 				a, b ));
 	}
@@ -390,7 +390,7 @@ lk::node_t *lk::parser::enumerate()
 
 		list_t *link = new list_t( line(), 
 			new expr_t( line(), expr_t::ASSIGN,
-				new iden_t( line_num, name, true, true, false ),
+				new iden_t( line_num, name, true, false ),
 				new constant_t( line(), cur_value ) ),
 			0 );
 
@@ -744,7 +744,7 @@ lk::node_t *lk::parser::unary()
 			node_t *id = 0;
 			if ( token() == lk::lexer::IDENTIFIER )
 			{
-				id = new iden_t( line(), lex.text(), false, false, false );
+				id = new iden_t( line(), lex.text(), false, false );
 				skip();
 			}
 			else
@@ -934,7 +934,7 @@ lk::node_t *lk::parser::primary()
 		skip();
 		return n; 
 	case lk::lexer::SPECIAL: // special identifiers like ${ab.fkn_34}
-		n = new lk::iden_t( line(), lex.text(), false, false, true );
+		n = new lk::iden_t( line(), lex.text(), false, true );
 		skip();
 		return n;
 	case lk::lexer::IDENTIFIER:
@@ -959,24 +959,15 @@ lk::node_t *lk::parser::primary()
 		}
 		else
 		{
-			bool common = false;
 			bool constval = false;
 			
-			int nmod = 0;
-			while( nmod++ < 2 && (lex.text() == "common" 
-				|| lex.text() == "const" 
-				|| lex.text() == "local" ) )
+			if ( lex.text() == "const" )
 			{
-				if (lex.text() == "local")
-					error("variable scoping rules have changed in LK, and the 'local' specifier is no longer valid."
-						"please refer to the documentation for details and update your codes accordingly.");
-
-				if (lex.text() == "common") common = true;
-				else constval = true;
+				constval = true;
 				skip();
 			}
 
-			n = new lk::iden_t( line(), lex.text(), common, constval, false );
+			n = new lk::iden_t( line(), lex.text(), constval, false );
 			match(lk::lexer::IDENTIFIER);
 		}
 		return n;
@@ -1019,7 +1010,7 @@ lk::list_t *lk::parser::identifierlist( int septok, int endtok)
 		
 	while ( !m_haltFlag && token(lk::lexer::IDENTIFIER) )
 	{
-		list_t *link = new list_t( line(), new iden_t( line(), lex.text(), false, false, false ), 0 );
+		list_t *link = new list_t( line(), new iden_t( line(), lex.text(), false, false ), 0 );
 		
 		if ( !head ) head = link;
 		

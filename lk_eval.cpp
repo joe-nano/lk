@@ -453,7 +453,7 @@ bool lk::eval::interpret( node_t *root,
 						if ( lk::fcallinfo_t *fi = cur_env->lookup_func( iden->name ) )
 						{
 							
-							lk::invoke_t cxt( iden->name, cur_env, result, fi->user_data );
+							lk::invoke_t cxt( cur_env, result, fi->user_data );
 							
 							list_t *argvals = dynamic_cast<list_t*>(n->right);
 							int nargidx = 0;

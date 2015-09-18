@@ -139,6 +139,8 @@ lk_string lk::vardata_t::as_string() const
 
 			return s;
 		}
+	case INTFUNC:
+	case EXTFUNC:
 	case FUNCTION:
 		return "<function>";
 	default:
@@ -226,10 +228,13 @@ bool lk::vardata_t::copy( vardata_t &rhs ) throw( error_t )
 			
 		}
 		return true;
+		
+	case EXTFUNC:		
+	case INTFUNC:		
 	case FUNCTION:		
 		assert_modify();
 		nullify();
-		set_type( FUNCTION );
+		set_type( rhs.type() );
 		m_u.p = rhs.m_u.p;
 		return true;
 
@@ -296,6 +301,12 @@ bool lk::vardata_t::equals(vardata_t &rhs) const
 	case FUNCTION:
 		return func() == rhs.func();
 
+	case INTFUNC:
+		return faddr() == rhs.faddr();
+
+	case EXTFUNC:
+		return fcall() == rhs.fcall();
+
 	default:
 		return false;
 	}
@@ -326,7 +337,10 @@ const char *lk::vardata_t::typestr() const
 	case STRING: return "string";
 	case VECTOR: return "array";
 	case HASH: return "table";
-	case FUNCTION: return "function";
+	case INTFUNC:
+	case EXTFUNC:
+	case FUNCTION:
+		return "function";
 	default: return "unknown";
 	}
 }
@@ -466,6 +480,25 @@ void lk::vardata_t::assign( vardata_t *ref ) throw( error_t )
 	m_u.p = ref;
 }
 
+void lk::vardata_t::assign_fcall( fcallinfo_t *fci ) throw( error_t )
+{
+	assert_modify();
+
+	nullify();
+	set_type( EXTFUNC );
+	m_u.p = fci;
+}
+
+
+void lk::vardata_t::assign_faddr( size_t ip ) throw( error_t )
+{
+	assert_modify();
+
+	nullify();
+	set_type( INTFUNC );
+	m_u.p = (void*)ip;
+}
+
 
 void lk::vardata_t::resize( size_t n ) throw( error_t )
 {
@@ -541,6 +574,18 @@ lk::expr_t *lk::vardata_t::func() const throw(error_t)
 {
 	if (type() != FUNCTION) throw error_t("access violation to non-function data");
 	return reinterpret_cast< expr_t* >(m_u.p);
+}
+
+lk::fcallinfo_t *lk::vardata_t::fcall() const throw(error_t)
+{
+	if (type() != EXTFUNC) throw error_t("access violation to non-function data");
+	return reinterpret_cast< fcallinfo_t* >(m_u.p);
+}
+
+size_t lk::vardata_t::faddr() const throw(error_t)
+{
+	if (type() != INTFUNC) throw error_t("access violation to non-function data");
+	return reinterpret_cast< size_t >(m_u.p);
 }
 
 lk::varhash_t *lk::vardata_t::hash() const throw(error_t)
@@ -1046,7 +1091,7 @@ bool lk::doc_t::info( fcallinfo_t *f, doc_t &d )
 	if (f!=0)
 	{
 		lk::vardata_t dummy_var;
-		lk::invoke_t cxt("", 0, dummy_var, 0);
+		lk::invoke_t cxt( 0, dummy_var, 0);
 		cxt.m_docPtr = &d; // possible b/c friend class
 		d.m_ok = false;
 
@@ -1066,7 +1111,7 @@ bool lk::doc_t::info( fcall_t f, doc_t &d )
 	if (f!=0)
 	{
 		lk::vardata_t dummy_var;
-		lk::invoke_t cxt("", 0, dummy_var, 0);
+		lk::invoke_t cxt( 0, dummy_var, 0);
 		cxt.m_docPtr = &d; // possible b/c friend class
 		d.m_ok = false;
 		(*f)( cxt ); // each function begins LK_DOC which calls invoke_t::document(..), should set m_ok to true
@@ -1082,7 +1127,7 @@ bool lk::doc_t::info( lk_invokable f, doc_t &d )
 	if (f!=0)
 	{
 		lk::vardata_t dummy_var;
-		lk::invoke_t cxt("", 0, dummy_var, 0);
+		lk::invoke_t cxt( 0, dummy_var, 0);
 		cxt.m_docPtr = &d; // possible b/c friend class
 		d.m_ok = false;
 		lk::external_call( f, cxt ); // each function begins LK_DOC which calls invoke_t::document(..), should set m_ok to true
