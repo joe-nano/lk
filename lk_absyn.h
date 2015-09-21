@@ -127,10 +127,6 @@ namespace lk
 			HASH,
 			CALL,
 			THISCALL,
-			RETURN,
-			EXIT,
-			BREAK,
-			CONTINUE,
 			SIZEOF,
 			KEYSOF,
 			TYPEOF,
@@ -161,10 +157,30 @@ namespace lk
 		iden_t(int line, const lk_string &n, bool cons, bool speci) : node_t(line), name(n), constval(cons), special(speci) {  }
 		virtual ~iden_t() { }
 	};
+
+	class ctlstmt_t : public node_t
+	{
+	public:
+		enum { 
+			INVALID,
+
+			RETURN,
+			EXIT,
+			BREAK,
+			CONTINUE
+		};
+
+		const char *ctlstr();
+
+		int ictl;
+		node_t *rexpr;
+		ctlstmt_t(int line, int ctl, node_t *ex = 0) : node_t(line), ictl(ctl), rexpr(ex) { }
+		virtual ~ctlstmt_t() { if ( rexpr ) delete rexpr; }
+	};
 				
 	class constant_t : public node_t
 	{
-	public:
+	public:		
 		double value;
 		constant_t(int line, double v) : node_t(line), value(v) {  }
 		virtual ~constant_t() {  }

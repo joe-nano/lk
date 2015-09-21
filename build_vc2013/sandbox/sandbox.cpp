@@ -10,8 +10,7 @@
 #include <wx/grid.h>
 #include <wx/zstream.h>
 #include <wx/app.h>
-
-
+#include <wx/busyinfo.h>
 
 #include <../lk_absyn.h>
 #include <../lk_env.h>
@@ -25,8 +24,8 @@
 namespace lk {
 
 enum Opcode {
-	ADD, SUB, MUL, DIV, LT, GT, LE, GE, NE, EQ, INC, DEC, OR, AND, NOT, NEG, EXP, PSH, POP, DUP, ARG,
-	J, JF, JT, IDX, KEY, MAT, WAT, SET, GET, WR, RREF, NREF, CREF, FREF, CALL, TCALL, RET, SZ, KEYS, TYP, VEC, HASH,
+	ADD, SUB, MUL, DIV, LT, GT, LE, GE, NE, EQ, INC, DEC, OR, AND, NOT, NEG, EXP, PSH, POP, DUP, NUL, ARG,
+	J, JF, JT, IDX, KEY, MAT, WAT, SET, GET, WR, RREF, NREF, CREF, FREF, CALL, TCALL, RET, END, SZ, KEYS, TYP, VEC, HASH,
 	__InvalidOp };
 
 struct { Opcode op; const char *name; } op_table[] = {
@@ -49,8 +48,9 @@ struct { Opcode op; const char *name; } op_table[] = {
 	{ EXP, "exp" }, // impl
 	{ PSH, "psh" }, // impl
 	{ POP, "pop" }, // impl
+	{ NUL, "nul" }, // impl
 	{ DUP, "dup", }, // impl
-	{ ARG, "arg" },
+	{ ARG, "arg" }, // impl
 	{ J, "j" }, // impl
 	{ JF, "jf" }, // impl
 	{ JT, "jt" }, // impl
@@ -68,6 +68,7 @@ struct { Opcode op; const char *name; } op_table[] = {
 	{ CALL, "call" }, // impl
 	{ TCALL, "tcall" }, // impl
 	{ RET, "ret" }, // impl
+	{ END, "end" }, // impl
 	{ SZ, "sz" }, // impl
 	{ KEYS, "keys" }, // impl
 	{ TYP, "typ" }, // impl
@@ -192,7 +193,7 @@ public:
 				{
 				case ADD:
 					CHECK_FOR_ARGS( 2 );
-					if ( lhs_deref.type() == vardata_t::STRING || lhs_deref.type() == vardata_t::STRING )
+					if ( lhs_deref.type() == vardata_t::STRING || rhs_deref.type() == vardata_t::STRING )
 						result.assign( lhs_deref.as_string() + rhs_deref.as_string() );
 					else
 						result.assign( lhs_deref.num() + rhs_deref.num() );
@@ -266,12 +267,12 @@ public:
 				case INC:
 					CHECK_FOR_ARGS( 1 );
 					rhs_deref.assign( rhs_deref.num() + 1.0 );
-					result.copy( rhs_deref );
+					//result.copy( *rhs );
 					break;
 				case DEC:
 					CHECK_FOR_ARGS( 1 );
 					rhs_deref.assign( rhs_deref.num() - 1.0 );
-					result.copy( rhs_deref );
+					//result.copy( *rhs );
 					break;
 				case NOT:
 					CHECK_FOR_ARGS( 1 );
@@ -447,7 +448,7 @@ public:
 				case WR:
 					CHECK_FOR_ARGS( 2 );
 					rhs_deref.copy( lhs_deref );
-					sp--; sp--;
+					sp--;
 					break;
 
 				case RREF:
@@ -498,11 +499,12 @@ public:
 				case CALL:
 				case TCALL:
 				{
-					CHECK_FOR_ARGS( arg+1 );
+					CHECK_FOR_ARGS( arg+2 );
 					if ( vardata_t::EXTFUNC == rhs_deref.type() && op == CALL )
 					{
 						fcallinfo_t *fci = rhs_deref.fcall();
-						invoke_t cxt( &frames.back().env, result, fci->user_data );
+						vardata_t &retval = stack[ sp - arg - 2 ];
+						invoke_t cxt( &frames.back().env, retval, fci->user_data );
 
 						for( size_t i=0;i<arg;i++ )
 							cxt.arg_list().push_back( stack[sp-arg-1+i] );						
@@ -512,8 +514,7 @@ public:
 							else if ( fci->f_ext ) lk::external_call( fci->f_ext, cxt );
 							else cxt.error( "invalid internal reference to function" );
 
-							sp -= (arg+1);
-							stack[sp-1].copy( cxt.result().deref() );
+							sp -= (arg+1); // leave return value on stack (even if null)
 						}
 						catch( std::exception &e )
 						{
@@ -571,10 +572,10 @@ public:
 					{
 						vardata_t *result = &stack[sp-1];
 						frame &F = frames.back();
-						size_t ncleanup = F.nargs + 1;
+						size_t ncleanup = F.nargs + 2;
 						if ( F.thiscall ) ncleanup++;
 
-						if ( sp < ncleanup ) return error("stack corruption upon function return");
+						if ( sp <= ncleanup ) return error("stack corruption upon function return");
 						sp -= ncleanup;
 						stack[sp-1].copy( result->deref() );
 						next_ip = F.retaddr;						
@@ -585,11 +586,63 @@ public:
 
 					break;
 
+				case END:
+					next_ip = code_size;
+					break;
+
+				case NUL:
+					CHECK_OVERFLOW();
+					stack[sp].nullify();
+					sp++;
+					break;
+
 				case DUP:
 					CHECK_OVERFLOW();
+					CHECK_FOR_ARGS( 1 );
 					stack[sp].copy( stack[sp-1] );
 					sp++;
 					break;
+
+				case VEC:
+				{
+					CHECK_FOR_ARGS( arg );
+					if ( arg > 0 )
+					{
+						vardata_t &vv = stack[sp-arg];
+						vardata_t save1;
+						save1.copy( vv.deref() );
+						vv.empty_vector();
+						vv.vec()->resize( arg );
+						vv.index(0)->copy( save1 );
+						for( size_t i=1;i<arg;i++ )
+							vv.index(i)->copy( stack[sp-arg+i].deref() );
+						sp -= (arg-1);
+					}
+					else
+					{
+						CHECK_OVERFLOW();
+						stack[sp].empty_vector();
+						sp++;
+					}
+					break;
+				}
+				case HASH:
+				{
+					size_t N = arg*2;
+					CHECK_FOR_ARGS( N );
+					vardata_t &vv = stack[sp-N];
+					lk_string key1( vv.deref().as_string() );
+					vv.empty_hash();
+					if ( arg > 0 )
+					{
+						for( size_t i=0;i<N;i+=2 )
+							vv.hash_item( i==0 ? key1 :
+								stack[sp-N+i].as_string() ).copy( 
+								stack[sp-N+i+1].deref() );
+					}
+					sp -= (N-1);
+					break;
+				}
 					
 				default:
 					return error( "invalid instruction (0x%02X)", (unsigned int)op );
@@ -794,9 +847,7 @@ public:
 		m_labelCounter = 0;
 		m_breakAddr.clear();
 		m_continueAddr.clear();
-		bool ok = pfgen(root, F_NONE );
-		place_label( "HALT" );
-		return ok;
+		return pfgen(root, F_NONE );
 	}
 
 private:
@@ -921,21 +972,21 @@ private:
 				{
 					if ( expr->oper == expr_t::INITVEC )
 					{
-						lk::vardata_t subvec;
-						subvec.empty_vector();
-						if ( !initialize_const_vec( dynamic_cast<list_t*>(expr->left), subvec ) )
+						val.empty_vector();
+						if ( !initialize_const_vec( dynamic_cast<list_t*>(expr->left), val ) )
 							return false;
 					}
 					else if ( expr->oper == expr_t::INITHASH )
 					{
-						lk::vardata_t subhash;
-						subhash.empty_hash();
-						if ( !initialize_const_hash( dynamic_cast<list_t*>(expr->left), subhash ) )
+						val.empty_hash();
+						if ( !initialize_const_hash( dynamic_cast<list_t*>(expr->left), val ) )
 							return false;
 					}
 					else
 						return false;
 				}
+				else
+					return false;
 
 				vhash.hash_item(key).copy( val );
 			}
@@ -948,6 +999,13 @@ private:
 		return true;
 	}
 
+	bool pfgen_stmt( lk::node_t *root, unsigned int flags )
+	{
+		bool ok = pfgen( root, flags );
+		// expressions always leave their value on the stack, so clean it up
+		if (expr_t *e = dynamic_cast<expr_t*>(root)) emit( POP );
+		return ok;
+	}
 
 	bool pfgen( lk::node_t *root, unsigned int flags )
 	{
@@ -958,23 +1016,15 @@ private:
 		{
 			while( n )
 			{
-				if ( !pfgen( n->item, flags ) )
+				if ( !pfgen_stmt( n->item, flags ) )
 					return false;
-
-				bool pop_expr_result = true;
-				if (expr_t *e = dynamic_cast<expr_t*>(n->item))
-					if ( e->oper == expr_t::ASSIGN )
-						pop_expr_result = false;
-
-				if ( pop_expr_result )
-					emit( POP );
-
+				
 				n=n->next;
 			}
 		}
 		else if ( iter_t *n = dynamic_cast<iter_t*>( root ) )
 		{
-			if ( n->init && !pfgen( n->init, flags ) ) return false;
+			if ( n->init && !pfgen_stmt( n->init, flags ) ) return false;
 
 			// labels for beginning and end of loop
 			lk_string Lb = new_label();
@@ -989,9 +1039,9 @@ private:
 
 			emit( JF, Le );
 			
-			pfgen( n->block, flags );
+			pfgen_stmt( n->block, flags );
 
-			if ( n->adv && !pfgen( n->adv, flags ) ) return false;
+			if ( n->adv && !pfgen_stmt( n->adv, flags ) ) return false;
 
 			emit( J, Lb );
 			place_label( Le );
@@ -1006,13 +1056,13 @@ private:
 
 			pfgen( n->test, flags );
 			emit( JF, L1 );
-			pfgen( n->on_true, flags );
+			pfgen_stmt( n->on_true, flags );
 			if ( n->on_false )
 			{
 				L2 = new_label();
 				emit( J, L2 );
 				place_label( L1 );
-				pfgen( n->on_false, flags );
+				pfgen_stmt( n->on_false, flags );
 			}
 			place_label( L2 );
 		}
@@ -1075,7 +1125,7 @@ private:
 				emit( INC );
 				break;
 			case expr_t::DECR:
-				pfgen( n->right, flags );
+				pfgen( n->left, flags );
 				emit( DEC );
 				break;
 			case expr_t::LOGIOR:
@@ -1186,6 +1236,9 @@ private:
 			case expr_t::CALL:
 			case expr_t::THISCALL:
 			{
+				// make space on stack for the return value
+				emit( NUL );
+
 				// evaluate all the arguments and pushon to stack
 				list_t *argvals = dynamic_cast<list_t*>(n->right);
 				list_t *p = argvals;
@@ -1305,7 +1358,7 @@ private:
 				idx = 0;
 				while( p )
 				{
-					place_label( labels[idx] );
+					place_label( labels[idx++] );
 					pfgen( p->item, F_NONE );
 					emit( J, Le );
 					p = p->next;
@@ -1313,28 +1366,6 @@ private:
 
 				place_label( Le );
 			}
-				break;
-
-			case expr_t::RETURN:
-				pfgen(n->left, F_NONE );
-				emit( RET );
-				break;
-
-			case expr_t::BREAK:
-				if ( m_breakAddr.size() == 0 )
-					return false;
-
-				emit( J, m_breakAddr.back() );
-				break;
-
-			case expr_t::CONTINUE:
-				if ( m_continueAddr.size() == 0 )
-					return false;
-				emit( J, m_continueAddr.back() );
-				break;
-
-			case expr_t::EXIT:
-				emit( J,  "HALT" );
 				break;
 
 			case expr_t::DEFINE:
@@ -1368,6 +1399,36 @@ private:
 				return false;
 			}
 		}
+		else if ( ctlstmt_t *n = dynamic_cast<ctlstmt_t*>( root ) )
+		{
+			switch( n->ictl )
+			{
+			case ctlstmt_t::RETURN:
+				pfgen(n->rexpr, F_NONE );
+				emit( RET );
+				break;
+
+			case ctlstmt_t::BREAK:
+				if ( m_breakAddr.size() == 0 )
+					return false;
+
+				emit( J, m_breakAddr.back() );
+				break;
+
+			case ctlstmt_t::CONTINUE:
+				if ( m_continueAddr.size() == 0 )
+					return false;
+				emit( J, m_continueAddr.back() );
+				break;
+
+			case ctlstmt_t::EXIT:
+				emit( END );
+				break;
+
+			default:
+				return false;
+			}
+		}
 		else if ( iden_t *n = dynamic_cast<iden_t*>( root ) )
 		{			
 			if ( n->special )
@@ -1384,6 +1445,10 @@ private:
 				emit( op, place_identifier(n->name) );
 			}
 		}
+		else if ( null_t *n = dynamic_cast<null_t*>(root) )
+		{
+			emit( NUL );
+		}
 		else if ( constant_t *n = dynamic_cast<constant_t*>(root ) )
 		{
 			emit( PSH, const_value( n->value ) );
@@ -1399,8 +1464,8 @@ private:
 
 }; // namespace lk
 
-enum { ID_CODE = wxID_HIGHEST+149, ID_PARSE, ID_ASM, ID_BYTECODE, ID_OUTPUT, ID_DEBUG,
-	ID_LOAD, ID_RESET, ID_STEP1, ID_RUN };
+enum { ID_CODE = wxID_HIGHEST+149, ID_SAVE, ID_PARSE, ID_ASM, ID_BYTECODE, ID_OUTPUT, ID_DEBUG,
+	ID_LOAD, ID_RESET, ID_STEP1, ID_VMRUN, ID_EVAL };
 
 class VMTestFrame : public wxFrame
 {
@@ -1416,14 +1481,17 @@ public:
 	VMTestFrame() : wxFrame( NULL, wxID_ANY, "LK-VM", wxDefaultPosition, wxSize(1200,900) )
 	{
 		runenv.register_func( output_cb, this );
+		runenv.register_func( makearray_cb, this );
 
 		wxFont font( 12, wxFONTFAMILY_MODERN, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Consolas" );
 
 		wxBoxSizer *buttons = new wxBoxSizer( wxHORIZONTAL );
-		buttons->Add( new wxButton( this, ID_LOAD, "Load bytecode"), 0, wxALL|wxEXPAND, 3 );
-		buttons->Add( new wxButton( this, ID_RESET, "Reset VM"), 0, wxALL|wxEXPAND, 3 );
-		buttons->Add( new wxButton( this, ID_STEP1, "Step 1 OP"), 0, wxALL|wxEXPAND, 3 );
-		buttons->Add( new wxButton( this, ID_RUN, "Run VM"), 0, wxALL|wxEXPAND, 3 );
+		buttons->Add( new wxButton( this, ID_SAVE, "save code"), 0, wxALL|wxEXPAND, 3 );
+		buttons->Add( new wxButton( this, ID_LOAD, "load bytecode"), 0, wxALL|wxEXPAND, 3 );
+		buttons->Add( new wxButton( this, ID_RESET, "reset"), 0, wxALL|wxEXPAND, 3 );
+		buttons->Add( new wxButton( this, ID_STEP1, "step"), 0, wxALL|wxEXPAND, 3 );
+		buttons->Add( new wxButton( this, ID_VMRUN, "execvm"), 0, wxALL|wxEXPAND, 3 );
+		buttons->Add( new wxButton( this, ID_EVAL, "interpret"), 0, wxALL|wxEXPAND, 3 );
 		buttons->Add( m_error=new wxTextCtrl( this, wxID_ANY, "ready."), 1, wxALL|wxALIGN_CENTER_VERTICAL, 3 );
 		m_error->SetForegroundColour( *wxRED );
 
@@ -1476,6 +1544,16 @@ public:
 		LK_DOC("outln", "output data", "none" );
 		VMTestFrame *frm = (VMTestFrame*)cxt.user_data();
 		frm->m_output->AppendText( cxt.arg(0).as_string() + "\n");
+	}
+	static void makearray_cb( lk::invoke_t &cxt )
+	{
+		LK_DOC("mkarray", "makearray", "none" );
+		cxt.result().empty_vector();
+		size_t n = 4;
+		if ( cxt.arg_count() > 0 )
+			n = cxt.arg(0).as_unsigned();
+		if ( n > 10 ) n = 10;
+		cxt.result().vec()->resize( n );
 	}
 
 	void UpdateVMView()
@@ -1570,14 +1648,27 @@ public:
 
 	void OnClose( wxCloseEvent &evt )
 	{
-		m_code->SaveFile( wxGetHomeDir() + "/.lk-vm-code" );
+		SaveCode();
 		wxTheApp->ScheduleForDestruction( this );
+	}
+
+	void SaveCode()
+	{
+		wxString file(wxGetHomeDir() + "/.lk-vm-code");
+		wxBusyInfo inf("writing " + file );
+		if (! m_code->SaveFile( file ) )
+			wxMessageBox("error saving code to file:\n\n" + file );
+		wxYield();
+		wxMilliSleep(150);
 	}
 
 	void OnCommand( wxCommandEvent &evt )
 	{
 		switch( evt.GetId() )
 		{
+		case ID_SAVE:			
+			SaveCode();
+			break;
 		case ID_CODE:
 			ParseAndGenerateAssembly();
 			break;
@@ -1599,10 +1690,42 @@ public:
 			m_error->ChangeValue( vm.error() );			
 			UpdateVMView();
 			break;
-		case ID_RUN:
+		case ID_VMRUN:
+		{
+			wxStopWatch sw;
 			vm.run( lk::vm::NORMAL, &runenv );
+			long ms = sw.Time();
 			m_error->ChangeValue( vm.error() );			
-			UpdateVMView();
+			//UpdateVMView();
+			m_output->AppendText( wxString::Format("\ncompleted in %d ms\n", ms ) );
+			break;
+		}
+
+		case ID_EVAL:
+			{
+				lk::input_string input( m_code->GetValue() );
+				lk::parser parse( input );
+				if ( lk::node_t *node = parse.script() )
+				{
+					if ( parse.error_count() == 0 )
+					{
+						lk::eval ev( node, &runenv );
+						wxStopWatch sw;
+						bool ok = ev.run();
+						long ms = sw.Time();
+						if ( !ok )
+						{
+							for( size_t i=0;i<ev.error_count();i++ )
+								m_output->AppendText( ev.get_error(i) + "\n");
+						}
+						m_output->AppendText( wxString::Format("\ncompleted in %d ms\n", ms ) );
+					}
+					else
+						m_output->AppendText(" parse errors? ");
+
+					delete node;
+				}
+			}
 			break;
 		}
 	}

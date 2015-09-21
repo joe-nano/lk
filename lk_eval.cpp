@@ -746,27 +746,40 @@ bool lk::eval::interpret( node_t *root,
 
 				return ok;
 			}
-			case expr_t::RETURN:
-				if ( n->left != 0 )
+			default:
+				break;
+			}
+		} catch ( lk::error_t &e ) {
+			m_errors.push_back( make_error(n, "!error: %s\n", (const char*)e.text.c_str()));
+			return false;
+		}
+	}
+	else if ( ctlstmt_t *n = dynamic_cast<ctlstmt_t*>( root ) )
+	{
+		try {
+			vardata_t l;
+			bool ok = true;
+			switch( n->ictl )
+			{
+			case ctlstmt_t::RETURN:
+				if ( n->rexpr != 0 )
 				{
-					ok = ok && interpret(n->left, cur_env, l, flags, ctl_id);
+					ok = ok && interpret(n->rexpr, cur_env, l, flags, ctl_id);
 					result.copy( l.deref() );
 				}
 				ctl_id = CTL_RETURN;
 				return ok;
-			case expr_t::EXIT:
+			case ctlstmt_t::EXIT:
 				ctl_id = CTL_EXIT;
 				return true;
 				break;
-			case expr_t::BREAK:
+			case ctlstmt_t::BREAK:
 				ctl_id = CTL_BREAK;
 				return true;
 				break;
-			case expr_t::CONTINUE:
+			case ctlstmt_t::CONTINUE:
 				ctl_id = CTL_CONTINUE;
 				return true;
-				break;
-			default:
 				break;
 			}
 		} catch ( lk::error_t &e ) {

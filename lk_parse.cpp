@@ -228,21 +228,21 @@ lk::node_t *lk::parser::statement()
 		lk::node_t *rval = 0;
 		if ( token() != lk::lexer::SEP_SEMI )
 			rval = ternary();
-		stmt = new expr_t( line(), expr_t::RETURN, rval, 0 );
+		stmt = new ctlstmt_t( line(), ctlstmt_t::RETURN, rval );
 	}
 	else if (lex.text() == "exit")
 	{
-		stmt = new expr_t( line(), expr_t::EXIT, 0, 0 );
+		stmt = new ctlstmt_t( line(), ctlstmt_t::EXIT );
 		skip();
 	}
 	else if (lex.text() == "break")
 	{
-		stmt = new expr_t( line(), expr_t::BREAK, 0, 0 );
+		stmt = new ctlstmt_t( line(), ctlstmt_t::BREAK );
 		skip();
 	}
 	else if (lex.text() == "continue")
 	{
-		stmt = new expr_t( line(), expr_t::CONTINUE, 0, 0 );
+		stmt = new ctlstmt_t( line(), ctlstmt_t::CONTINUE );
 		skip();
 	}
 	else if ( lex.text() == "import" )
