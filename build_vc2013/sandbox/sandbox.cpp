@@ -81,7 +81,7 @@ class vm
 public:
 	struct frame {
 		frame( lk::env_t *parent, size_t fptr, size_t ret, size_t na )
-			: env( parent ), fp(fptr), retaddr(ret), nargs(na), iarg(0), thiscall( false )
+			: env( parent), fp(fptr), retaddr(ret), nargs(na), iarg(0), thiscall( false )
 		{
 		}
 
@@ -99,7 +99,7 @@ private:
 	std::vector< unsigned int > program;
 	std::vector< vardata_t > constants;
 	std::vector< lk_string > identifiers;
-	std::vector< frame > frames;
+	std::vector< frame* > frames;
 	lk_string errStr;
 
 public:
@@ -112,11 +112,13 @@ public:
 
 	virtual ~vm()
 	{
+		for( size_t i=0;i<frames.size(); i++ )
+			delete frames[i];
 	}
 
 	size_t get_ip() { return ip; }
 
-	frame *get_frames( size_t *nfrm ) {
+	frame **get_frames( size_t *nfrm ) {
 		*nfrm = frames.size();
 		if ( frames.size() > 0 ) return &frames[0];
 		else return 0;
@@ -161,13 +163,16 @@ public:
 		ip = sp = 0;
 		for( size_t i=0;i<stack.size();i++ )
 			stack[i].nullify();
+
+		for( size_t i=0;i<frames.size();i++ )
+			delete frames[i];
 		frames.clear();
 	}
 
 	bool run( ExecMode mode = NORMAL, lk::env_t *env = 0 )
 	{
 		if ( frames.size() == 0 )
-			frames.push_back( frame( env, 0, 0, 0 ) );
+			frames.push_back( new frame( env, 0, 0, 0 ) );
 
 		vardata_t nullval;
 		size_t nexecuted = 0;
@@ -454,14 +459,16 @@ public:
 				case RREF:
 				case CREF:
 				case NREF:
+				{
+					frame &F = *frames.back();
 					CHECK_OVERFLOW();
 					CHECK_IDENTIFIER();
 
-					if ( fcallinfo_t *fci = frames.back().env.lookup_func( identifiers[arg] ) )
+					if ( fcallinfo_t *fci = F.env.lookup_func( identifiers[arg] ) )
 					{
 						stack[sp++].assign_fcall( fci );
 					}
-					else if ( vardata_t *x = frames.back().env.lookup( identifiers[arg], op == RREF ) )
+					else if ( vardata_t *x = F.env.lookup( identifiers[arg], op == RREF ) )
 					{
 						stack[sp++].assign( x );
 					}
@@ -473,19 +480,20 @@ public:
 							x->set_flag( vardata_t::CONSTVAL );
 							x->clear_flag( vardata_t::ASSIGNED );
 						}
-						frames.back().env.assign( identifiers[arg], x );
+						F.env.assign( identifiers[arg], x );
 						stack[sp++].assign( x );
 					}
 					else
 						return error("referencing unassigned variable: %s\n", (const char*)identifiers[arg].c_str() );
 
 					break;
+				}
 
 				case TYP:
 					CHECK_OVERFLOW();
 					CHECK_IDENTIFIER();
 
-					if ( vardata_t *x = frames.back().env.lookup( identifiers[arg], true ) )
+					if ( vardata_t *x = frames.back()->env.lookup( identifiers[arg], true ) )
 						stack[sp++].assign( x->typestr() );
 					else
 						stack[sp++].assign( "unknown" );
@@ -502,9 +510,10 @@ public:
 					CHECK_FOR_ARGS( arg+2 );
 					if ( vardata_t::EXTFUNC == rhs_deref.type() && op == CALL )
 					{
+						frame &F = *frames.back();
 						fcallinfo_t *fci = rhs_deref.fcall();
 						vardata_t &retval = stack[ sp - arg - 2 ];
-						invoke_t cxt( &frames.back().env, retval, fci->user_data );
+						invoke_t cxt( &F.env, retval, fci->user_data );
 
 						for( size_t i=0;i<arg;i++ )
 							cxt.arg_list().push_back( stack[sp-arg-1+i] );						
@@ -523,10 +532,9 @@ public:
 					}
 					else if ( vardata_t::INTFUNC == rhs_deref.type() )
 					{
-						frames.push_back( frame( &frames.back().env, sp, next_ip, arg ) );
-						frame &F = frames.back();
-						
-						
+						frames.push_back( new frame( &frames.back()->env, sp, next_ip, arg ) );
+						frame &F = *frames.back();
+												
 						vardata_t *__args = new vardata_t;
 						__args->empty_vector();
 
@@ -553,7 +561,7 @@ public:
 				case ARG:
 					if ( frames.size() > 0 )
 					{
-						frame &F = frames.back();
+						frame &F = *frames.back();
 						if ( F.iarg >= F.nargs )
 							return error("too few arguments passed to function");
 
@@ -571,14 +579,16 @@ public:
 					if ( frames.size() > 1 )
 					{
 						vardata_t *result = &stack[sp-1];
-						frame &F = frames.back();
+						frame &F = *frames.back();
 						size_t ncleanup = F.nargs + 2;
 						if ( F.thiscall ) ncleanup++;
 
 						if ( sp <= ncleanup ) return error("stack corruption upon function return");
 						sp -= ncleanup;
 						stack[sp-1].copy( result->deref() );
-						next_ip = F.retaddr;						
+						next_ip = F.retaddr;
+
+						delete frames.back();
 						frames.pop_back();
 					}
 					else
@@ -1132,8 +1142,7 @@ private:
 			{
 				lk_string Lsc = new_label();
 				pfgen(n->left, flags );
-				emit( PSH, const_value(0) );
-				emit( NE );
+				emit( DUP );
 				emit( JT, Lsc );
 				pfgen(n->right, flags);
 				emit( OR );
@@ -1144,11 +1153,10 @@ private:
 			{
 				lk_string Lsc = new_label();
 				pfgen(n->left, flags );
-				emit( PSH, const_value(0) );
-				emit( EQ );
-				emit( JT, Lsc );
+				emit( DUP );
+				emit( JF, Lsc );
 				pfgen(n->right, flags );
-				emit( OR );
+				emit( AND );
 				place_label( Lsc );
 			}
 				break;
@@ -1572,10 +1580,10 @@ public:
 		sout += "----------------\n\n";
 
 		size_t nfrm = 0;
-		lk::vm::frame *frames = vm.get_frames( &nfrm );
+		lk::vm::frame **frames = vm.get_frames( &nfrm );
 		for( size_t i=0;i<nfrm;i++ )
 		{
-			lk::vm::frame &F = frames[nfrm-i-1];
+			lk::vm::frame &F = *frames[nfrm-i-1];
 			sout += wxString::Format( "frame[%d] ret=%d fp=%d iarg=%d narg=%d %s\n", 
 				nfrm-i-1, F.retaddr, F.fp, F.iarg, F.nargs, F.thiscall ? "(thiscall)" : "" );
 			lk_string key;
@@ -1696,7 +1704,7 @@ public:
 			vm.run( lk::vm::NORMAL, &runenv );
 			long ms = sw.Time();
 			m_error->ChangeValue( vm.error() );			
-			//UpdateVMView();
+			UpdateVMView();
 			m_output->AppendText( wxString::Format("\ncompleted in %d ms\n", ms ) );
 			break;
 		}
@@ -1709,7 +1717,8 @@ public:
 				{
 					if ( parse.error_count() == 0 )
 					{
-						lk::eval ev( node, &runenv );
+						lk::env_t myenv( &runenv );
+						lk::eval ev( node, &myenv );
 						wxStopWatch sw;
 						bool ok = ev.run();
 						long ms = sw.Time();
