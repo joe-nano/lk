@@ -96,7 +96,9 @@ namespace lk {
 		bool lessthan( vardata_t &rhs ) const;
 
 		void nullify(); // only function that override const-ness
-		 
+		
+		void deep_localize();
+
 		bool copy( vardata_t &rhs ) throw( error_t );
 		vardata_t &operator=(const vardata_t &rhs) throw( error_t )
 		{
@@ -114,7 +116,7 @@ namespace lk {
 			if (!p) throw error_t("dereference resulted in null target");
 			return *p;
 		}
-		
+				
 		void assign( double d ) throw( error_t );
 		void assign( const char *s ) throw( error_t );
 		void assign( const lk_string &s ) throw( error_t );

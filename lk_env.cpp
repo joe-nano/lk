@@ -182,6 +182,32 @@ double lk::vardata_t::as_number() const
 	}
 }
 
+void lk::vardata_t::deep_localize()
+{
+	switch( type() )
+	{
+	case REFERENCE:
+		copy( deref() );
+		break;
+	case VECTOR:
+	{
+		for( size_t i=0;i<length();i++ )
+			index(i)->deep_localize();
+	}
+		break;
+	case HASH:
+	{
+		varhash_t &hh = *hash();
+		for( varhash_t::iterator it = hh.begin();
+			it != hh.end();
+			++it )
+			it->second->deep_localize();
+	}
+		break;
+		
+	}
+}
+
 bool lk::vardata_t::copy( vardata_t &rhs ) throw( error_t )
 {
 	switch( rhs.type() )
@@ -194,6 +220,8 @@ bool lk::vardata_t::copy( vardata_t &rhs ) throw( error_t )
 		assert_modify();
 		nullify();
 		set_type( REFERENCE );
+		if ( rhs.m_u.p == this )
+			throw error_t("internal error: copying self-referential reference" );
 		m_u.p = rhs.m_u.p;
 		return true;
 	case NUMBER:
@@ -477,6 +505,8 @@ void lk::vardata_t::assign( vardata_t *ref ) throw( error_t )
 
 	nullify();
 	set_type( REFERENCE );
+	if ( ref == this )
+		throw error_t( "internal error: assigning self-referential reference");
 	m_u.p = ref;
 }
 

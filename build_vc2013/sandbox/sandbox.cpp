@@ -1482,6 +1482,7 @@ enum { ID_CODE = wxID_HIGHEST+149, ID_SAVE, ID_PARSE, ID_ASM, ID_BYTECODE, ID_OU
 
 class VMTestFrame : public wxFrame
 {
+	lk::env_t *m_runEnv;
 	static const int m_markCircle = 0;
 	static const int m_markArrow = 1;
 	static const int m_markLeftBox = 2;
@@ -1498,17 +1499,23 @@ class VMTestFrame : public wxFrame
 	std::vector<unsigned int> program;
 	std::vector<lk::vardata_t> constants;
 	std::vector<lk_string> identifiers;
-	lk::env_t runenv;
 public:
+	void ResetRunEnv()
+	{
+		if ( m_runEnv ) delete m_runEnv;
+		m_runEnv = new lk::env_t;
+		m_runEnv->register_func( output_cb, this );
+		m_runEnv->register_func( rand_cb );
+		m_runEnv->register_funcs( lk::stdlib_basic() );
+		m_runEnv->register_funcs( lk::stdlib_math() );
+		m_runEnv->register_funcs( lk::stdlib_string() );
+		m_runEnv->register_funcs( lk::stdlib_wxui() );
+	}
+
 	VMTestFrame() : wxFrame( NULL, wxID_ANY, "LK-VM", wxDefaultPosition, wxSize(1200,900) )
 	{
-		runenv.register_func( output_cb, this );
-		runenv.register_func( rand_cb );
-		runenv.register_funcs( lk::stdlib_basic() );
-		runenv.register_funcs( lk::stdlib_math() );
-		runenv.register_funcs( lk::stdlib_string() );
-		runenv.register_funcs( lk::stdlib_wxui() );
-
+		m_runEnv = 0;
+		
 		wxFont font( 12, wxFONTFAMILY_MODERN, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Consolas" );
 
 		wxBoxSizer *buttons = new wxBoxSizer( wxHORIZONTAL );
@@ -1563,6 +1570,9 @@ public:
 
 		m_code->LoadFile( wxGetHomeDir() + "/.lk-vm-code" );
 		ParseAndGenerateAssembly();
+	}
+	virtual ~VMTestFrame() {
+		if (m_runEnv) delete m_runEnv;
 	}
 	
 	void SetupCodeEditorStyle()
@@ -1821,6 +1831,7 @@ public:
 			ParseAndGenerateAssembly();
 			break;
 		case ID_LOAD:
+			ResetRunEnv();
 			vm.load( program, constants, identifiers );
 			m_debug->ChangeValue(
 				wxString::Format("vm loaded %d instructions, %d constants, %d identifiers.\n",
@@ -1830,18 +1841,20 @@ public:
 			UpdateVMView();
 			break;
 		case ID_RESET:
+			ResetRunEnv();
 			vm.restart();
 			UpdateVMView();
 			break;
-		case ID_STEP1:			
-			vm.run( lk::vm::SINGLE, &runenv );
+		case ID_STEP1:
+			vm.run( lk::vm::SINGLE, m_runEnv );
 			m_error->ChangeValue( vm.error() );			
 			UpdateVMView();
 			break;
 		case ID_VMRUN:
 		{
 			wxStopWatch sw;
-			vm.run( lk::vm::NORMAL, &runenv );
+			ResetRunEnv();
+			vm.run( lk::vm::NORMAL, m_runEnv );
 			long ms = sw.Time();
 			m_error->ChangeValue( vm.error() );			
 			UpdateVMView();
@@ -1857,7 +1870,8 @@ public:
 				{
 					if ( parse.error_count() == 0 )
 					{
-						lk::env_t myenv( &runenv );
+						ResetRunEnv();
+						lk::env_t myenv( m_runEnv );
 						lk::eval ev( node, &myenv );
 						wxStopWatch sw;
 						bool ok = ev.run();
