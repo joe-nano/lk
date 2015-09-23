@@ -106,7 +106,11 @@ namespace lk {
 
 		inline vardata_t &deref() const throw (error_t) {
 			vardata_t *p = const_cast<vardata_t*>(this);
-			while ( p->type() == REFERENCE ) p = p->ref();
+			while ( p->type() == REFERENCE ) {
+				vardata_t *pref = reinterpret_cast<vardata_t*>(p->m_u.p);
+				if ( p == pref ) throw error_t("self referential reference");
+				p = pref;
+			}
 			if (!p) throw error_t("dereference resulted in null target");
 			return *p;
 		}
