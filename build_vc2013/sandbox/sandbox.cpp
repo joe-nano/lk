@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #define LK_USE_WXWIDGETS 1
 
 #include <wx/wx.h>
@@ -29,7 +31,7 @@ namespace lk {
 enum Opcode {
 	ADD, SUB, MUL, DIV, LT, GT, LE, GE, NE, EQ, INC, DEC, OR, AND, NOT, NEG, EXP, PSH, POP, DUP, NUL, ARG,
 	J, JF, JT, IDX, KEY, MAT, WAT, SET, GET, WR, RREF, NREF, CREF, FREF, CALL, TCALL, RET, END, SZ, KEYS, TYP, VEC, HASH,
-	__InvalidOp };
+	__MaxOp };
 
 struct { Opcode op; const char *name; } op_table[] = {
 	{ ADD, "add" }, // impl
@@ -77,7 +79,9 @@ struct { Opcode op; const char *name; } op_table[] = {
 	{ TYP, "typ" }, // impl
 	{ VEC, "vec" },
 	{ HASH, "hash" },
-	{ __InvalidOp, 0 } };
+	{ __MaxOp, 0 } };
+
+#define OP_PROFILE 1 
 
 class vm
 {
@@ -102,8 +106,18 @@ private:
 	std::vector< unsigned int > program;
 	std::vector< vardata_t > constants;
 	std::vector< lk_string > identifiers;
+	std::vector< srcpos_t > debuginfo;
+	std::vector< bool > brkpoints;
 	std::vector< frame* > frames;
 	lk_string errStr;
+
+#ifdef OP_PROFILE
+	size_t opcount[__MaxOp];
+	void clear_opcount() {
+		for( size_t i=0;i<__MaxOp;i++ )
+			opcount[i] = 0;
+	}
+#endif
 
 public:
 	vm( size_t ssize = 2048 )
@@ -111,7 +125,20 @@ public:
 		ip = sp = 0;
 		stack.resize( ssize, vardata_t() );
 		frames.reserve( 16 );
+
+#ifdef OP_PROFILE
+		clear_opcount();
+#endif
+
 	}
+
+#ifdef OP_PROFILE
+	void get_opcount( size_t iop[__MaxOp] )
+	{
+		for( size_t i=0;i<__MaxOp;i++ )
+			iop[i] = opcount[i];
+	}
+#endif
 
 	virtual ~vm()
 	{
@@ -134,11 +161,13 @@ public:
 
 	void load( const std::vector<unsigned int> &code,
 		const std::vector<vardata_t> &cnstvals,
-		const std::vector<lk_string> &ids )
+		const std::vector<lk_string> &ids,
+		const std::vector<lk::srcpos_t> &dbginf)
 	{
 		program = code;
 		constants = cnstvals;
 		identifiers = ids;
+		debuginfo = dbginf;
 
 		restart();
 	}
@@ -153,15 +182,12 @@ public:
 		throw error_t( "no defined mechanism to get special variable '" + name + "'" );
 	}
 
-	enum ExecMode { NORMAL, DEBUG, SINGLE };
-
-#define CHECK_FOR_ARGS(n) if ( sp < n ) return error("stack [sp=%d] error, %d arguments required", sp, n );
-#define CHECK_OVERFLOW() if ( sp >= stack.size() ) return error("stack overflow [sp=%d]", stack.size())
-#define CHECK_CONSTANT() if ( arg >= constants.size() ) return error( "invalid constant value address: %d\n", arg )
-#define CHECK_IDENTIFIER() if ( arg >= identifiers.size() ) return error( "invalid identifier address: %d\n", arg )
-
 	void restart()
 	{
+#ifdef OP_PROFILE
+		clear_opcount();
+#endif
+
 		errStr.clear();
 		ip = sp = 0;
 		for( size_t i=0;i<stack.size();i++ )
@@ -170,7 +196,18 @@ public:
 		for( size_t i=0;i<frames.size();i++ )
 			delete frames[i];
 		frames.clear();
+
+		brkpoints.clear();
+		brkpoints.resize( program.size(), false );
 	}
+
+	enum ExecMode { NORMAL, DEBUG, SINGLE };
+
+#define CHECK_FOR_ARGS(n) if ( sp < n ) return error("stack [sp=%d] error, %d arguments required", sp, n );
+#define CHECK_OVERFLOW() if ( sp >= stack.size() ) return error("stack overflow [sp=%d]", stack.size())
+#define CHECK_CONSTANT() if ( arg >= constants.size() ) return error( "invalid constant value address: %d\n", arg )
+#define CHECK_IDENTIFIER() if ( arg >= identifiers.size() ) return error( "invalid identifier address: %d\n", arg )
+
 
 	bool run( ExecMode mode = NORMAL, lk::env_t *env = 0 )
 	{
@@ -187,6 +224,11 @@ public:
 			{
 				Opcode op = (Opcode)(unsigned char)program[ip];
 				size_t arg = ( program[ip] >> 8 );
+
+#ifdef OP_PROFILE
+				opcount[op]++;
+#endif
+
 				
 				next_ip = ip+1;
 			
@@ -695,10 +737,10 @@ private:
 	struct instr {
 		instr( Opcode _op, int _arg, const char *lbl = 0 )
 			: op(_op), arg(_arg) {
-			srcln = 0;
 			label = 0;
 			if ( lbl ) label = new lk_string(lbl);
 		}
+
 		instr( const instr &cpy )
 		{
 			copy( cpy );
@@ -708,7 +750,7 @@ private:
 		}
 		void copy( const instr &cpy )
 		{
-			srcln = cpy.srcln;
+			pos = cpy.pos;
 			op = cpy.op;
 			arg = cpy.arg;
 			label = 0;
@@ -724,7 +766,7 @@ private:
 		Opcode op;
 		int arg;
 		lk_string *label;
-		int srcln;
+		lk::srcpos_t pos;
 	};
 
 	node_t *m_currentNode;
@@ -762,17 +804,20 @@ public:
 	
 	size_t bytecode( std::vector<unsigned int> &bc, 
 		std::vector<vardata_t> &constData, 
-		std::vector<lk_string> &idList )
+		std::vector<lk_string> &idList,
+		std::vector<srcpos_t> &debugInfo )
 	{
 		if ( m_asm.size() == 0 ) return 0;
 
 		bc.resize( m_asm.size(), 0 );
+		debugInfo.resize( m_asm.size(), srcpos_t() );
 
 		for( size_t i=0;i<m_asm.size();i++ )
 		{
 			instr &ip = m_asm[i];
 			if ( ip.label ) m_asm[i].arg = m_labelAddr[ *ip.label ];
 			bc[i] = (((unsigned int)ip.op)&0x000000FF) | (((unsigned int)ip.arg)<<8);
+			debugInfo[i] = m_asm[i].pos;
 		}
 
 		constData = m_constData;
@@ -780,6 +825,7 @@ public:
 
 		return m_asm.size();
 	}
+
 
 	void output( lk_string &assembly, lk_string &bytecode )
 	{
@@ -813,7 +859,7 @@ public:
 			{
 				if ( ip.op == op_table[j].op )
 				{
-					sprintf( buf, "%4d  %4s ", ip.srcln, op_table[j].name );
+					sprintf( buf, "%4d  %4s ", ip.pos.line, op_table[j].name );
 					assembly += buf;
 
 					if ( ip.label )
@@ -916,7 +962,7 @@ private:
 	int emit( Opcode o, int arg = 0)
 	{
 		instr x( o, arg );
-		x.srcln = m_currentNode ? m_currentNode->line() : 0;
+		if ( m_currentNode ) x.pos = m_currentNode->srcpos();
 		m_asm.push_back( x );
 		return m_asm.size();
 	}
@@ -924,7 +970,7 @@ private:
 	int emit( Opcode o, const lk_string &L )
 	{
 		instr x(o, 0, (const char*) L.c_str());
-		x.srcln = m_currentNode ? m_currentNode->line() : 0;
+		if ( m_currentNode ) x.pos = m_currentNode->srcpos();
 		m_asm.push_back( x );
 		return m_asm.size();
 	}
@@ -1499,6 +1545,7 @@ class VMTestFrame : public wxFrame
 	std::vector<unsigned int> program;
 	std::vector<lk::vardata_t> constants;
 	std::vector<lk_string> identifiers;
+	std::vector<lk::srcpos_t> debuginfo;
 public:
 	void ResetRunEnv()
 	{
@@ -1716,8 +1763,20 @@ public:
 
 	void UpdateVMView()
 	{
-		if ( vm.get_ip() < m_asm->GetCount() )
-			m_asm->SetSelection( vm.get_ip() );
+		size_t ip = vm.get_ip();
+		if ( ip  < m_asm->GetCount() )
+			m_asm->SetSelection( ip );
+
+		if ( ip < debuginfo.size() )
+		{
+			int line = debuginfo[ip].line;
+			if ( line > 0 && line <= m_code->GetNumberOfLines() )
+			{
+				m_code->ScrollToLine( line-1 );
+				m_code->MarkerDeleteAll(m_markArrow );
+				m_code->MarkerAdd( line-1, m_markArrow );
+			}
+		}
 		
 		size_t sp = 0;
 		lk::vardata_t *stack = vm.get_stack( &sp );
@@ -1746,6 +1805,14 @@ public:
 			}
 		}
 
+		std::vector< size_t > opcnt( (size_t)lk::__MaxOp, 0 );
+		vm.get_opcount( &opcnt[0] );
+		
+		sout += "\nopcode frequency:\n";
+		for( size_t i=0;i<(size_t)lk::__MaxOp;i++ )
+			sout += wxString::Format("%s\t%d\n", lk::op_table[i].name, (int)opcnt[i]);
+		sout+="\n";
+
 		m_debug->ChangeValue( sout );
 	}
 
@@ -1763,7 +1830,7 @@ public:
 				lk::code_gen cg;
 				if ( cg.build( node ) ) {
 					cg.output( assembly, bytecode );
-					cg.bytecode( program, constants, identifiers );
+					cg.bytecode( program, constants, identifiers, debuginfo );
 				}
 				else assembly = "error in assembly generation";
 			}
@@ -1832,7 +1899,7 @@ public:
 			break;
 		case ID_LOAD:
 			ResetRunEnv();
-			vm.load( program, constants, identifiers );
+			vm.load( program, constants, identifiers, debuginfo );
 			m_debug->ChangeValue(
 				wxString::Format("vm loaded %d instructions, %d constants, %d identifiers.\n",
 					(int) program.size(), (int)constants.size(), (int)identifiers.size() ) );
