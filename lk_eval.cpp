@@ -730,9 +730,9 @@ bool lk::eval::interpret( node_t *root,
 								varhash_t *h = result.hash();
 								varhash_t::iterator it = h->find( key );
 								if (it != h->end())
-									(*it).second->copy( vval );
+									(*it).second->copy( vval.deref() );
 								else
-									(*h)[key] = new vardata_t( vval );
+									(*h)[key] = new vardata_t( vval.deref() );
 							}
 						}
 
