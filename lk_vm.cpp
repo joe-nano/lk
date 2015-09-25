@@ -136,10 +136,9 @@ void vm::initialize( lk::env_t *env )
 	for( size_t i=0;i<stack.size();i++ )
 		stack[i].nullify();
 		
-	brkpoints.clear();
-	brkpoints.resize( program.size(), false );
-		
 	frames.push_back( new frame( env, 0, 0, 0 ) );
+
+	ibrkln = 0;
 }
 
 enum ExecMode { NORMAL, DEBUG, SINGLE };
@@ -167,6 +166,12 @@ bool vm::run( ExecMode mode )
 #ifdef OP_PROFILE
 			opcount[op]++;
 #endif
+
+			if ( mode == DEBUG )
+			{
+				if ( ip < debuginfo.size() && debuginfo[ip].line == (int)ibrkln )
+					return true;
+			}
 
 			next_ip = ip+1;
 			
@@ -666,6 +671,18 @@ bool vm::error( const char *fmt, ... )
 	va_end( args );
 	errStr = buf;	
 	return false;
+}
+
+int vm::setbrk( int line )
+{
+	for( size_t i=0;i<debuginfo.size();i++ ) {
+		if ( debuginfo[i].line >= line ) {
+			ibrkln = debuginfo[i].line;
+			return debuginfo[i].line;
+		}
+	}
+
+	return -1;
 }
 
 } // namespace lk;

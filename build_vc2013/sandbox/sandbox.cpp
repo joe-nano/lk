@@ -28,7 +28,7 @@
 #include "mtrand.h"
 
 
-enum { ID_CODE = wxID_HIGHEST+149, ID_SAVE, ID_PARSE, ID_ASM, ID_BYTECODE, ID_OUTPUT, ID_DEBUG,
+enum { ID_CODE = wxID_HIGHEST+149, ID_SAVE, ID_PARSE, ID_IBRK, ID_ASM, ID_BYTECODE, ID_OUTPUT, ID_DEBUG,
 	ID_LOAD, ID_RESET, ID_STEP1, ID_VMRUN, ID_EVAL };
 
 class VMTestFrame : public wxFrame
@@ -43,7 +43,7 @@ class VMTestFrame : public wxFrame
 	static const int m_foldingMarginId = 3;
 
 	wxStyledTextCtrl *m_code;
-	wxTextCtrl *m_parse, *m_bytecode, *m_output, *m_error, *m_debug;
+	wxTextCtrl *m_parse, *m_bytecode, *m_output, *m_error, *m_debug, *m_ibrk;
 	wxListBox *m_asm;
 	lk::vm vm;
 
@@ -71,6 +71,11 @@ public:
 		
 		wxFont font( 12, wxFONTFAMILY_MODERN, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, "Consolas" );
 
+		m_ibrk = new wxTextCtrl( this, ID_IBRK, "0");
+		m_ibrk->SetFont( font );
+		m_ibrk->SetForegroundColour( *wxGREEN );
+
+
 		wxBoxSizer *buttons = new wxBoxSizer( wxHORIZONTAL );
 		buttons->Add( new wxButton( this, ID_SAVE, "save code"), 0, wxALL|wxEXPAND, 3 );
 		buttons->Add( new wxButton( this, ID_LOAD, "load bytecode"), 0, wxALL|wxEXPAND, 3 );
@@ -79,6 +84,8 @@ public:
 		buttons->Add( new wxButton( this, ID_VMRUN, "execvm"), 0, wxALL|wxEXPAND, 3 );
 		buttons->Add( new wxButton( this, ID_EVAL, "interpret"), 0, wxALL|wxEXPAND, 3 );
 		buttons->Add( m_error=new wxTextCtrl( this, wxID_ANY, "ready."), 1, wxALL|wxALIGN_CENTER_VERTICAL, 3 );
+		buttons->Add( new wxStaticText( this, wxID_ANY, "   brk: "), 0, wxALL|wxALIGN_CENTER_VERTICAL, 3 );
+		buttons->Add( m_ibrk, 0, wxALL|wxEXPAND, 3 );
 		m_error->SetForegroundColour( *wxRED );
 
 		m_code = new wxStyledTextCtrl( this, ID_CODE );
@@ -401,6 +408,7 @@ public:
 			UpdateVMView();
 			break;
 		case ID_RESET:
+			m_ibrk->ChangeValue( "0" );
 			ResetRunEnv();
 			vm.initialize(m_runEnv);
 			UpdateVMView();
@@ -412,13 +420,23 @@ public:
 			break;
 		case ID_VMRUN:
 		{
+			int ln = atoi( m_ibrk->GetValue().c_str() );
+			if ( ln > 0 )
+			{
+				ln = vm.setbrk( ln );
+				m_ibrk->ChangeValue( wxString::Format("%d", ln) );
+			}
 			wxStopWatch sw;
-			ResetRunEnv();
-			vm.run( lk::vm::NORMAL );
+			vm.run( lk::vm::DEBUG );
+			if( ln > 0 )
+			{
+				ln = vm.setbrk( ln+1 );
+				m_ibrk->ChangeValue( wxString::Format("%d", ln) );
+			}
+
 			long ms = sw.Time();
-			m_error->ChangeValue( vm.error() );			
+			m_error->ChangeValue( vm.error() + wxString::Format("  (elapsed %d ms)\n", ms ) );			
 			UpdateVMView();
-			m_output->AppendText( wxString::Format("\ncompleted in %d ms\n", ms ) );
 			break;
 		}
 

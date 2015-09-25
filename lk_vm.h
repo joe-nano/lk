@@ -40,9 +40,9 @@ private:
 	std::vector< vardata_t > constants;
 	std::vector< lk_string > identifiers;
 	std::vector< srcpos_t > debuginfo;
-	std::vector< bool > brkpoints;
 	std::vector< frame* > frames;
 	lk_string errStr;
+	int ibrkln;
 
 	void free_frames();
 	bool error( const char *fmt, ... );
@@ -61,6 +61,8 @@ public:
 	void initialize( lk::env_t *env );
 	bool run( ExecMode mode = NORMAL );
 	lk_string error() { return errStr; }
+
+	int setbrk( int line );
 
 	size_t get_ip() { return ip; }
 	frame **get_frames( size_t *nfrm );
