@@ -1556,6 +1556,7 @@ public:
 		m_runEnv->register_funcs( lk::stdlib_math() );
 		m_runEnv->register_funcs( lk::stdlib_string() );
 		m_runEnv->register_funcs( lk::stdlib_wxui() );
+		vm.initialize( m_runEnv );
 	}
 
 	VMTestFrame() : wxFrame( NULL, wxID_ANY, "LK-VM", wxDefaultPosition, wxSize(1200,900) )
@@ -1907,16 +1908,16 @@ public:
 				wxString::Format("vm loaded %d instructions, %d constants, %d identifiers.\n",
 					(int) program.size(), (int)constants.size(), (int)identifiers.size() ) );
 			m_output->Clear();
-			vm.restart();
+			vm.initialize(m_runEnv);
 			UpdateVMView();
 			break;
 		case ID_RESET:
 			ResetRunEnv();
-			vm.restart();
+			vm.initialize(m_runEnv);
 			UpdateVMView();
 			break;
 		case ID_STEP1:
-			vm.run( lk::vm::SINGLE, m_runEnv );
+			vm.run( lk::vm::SINGLE );
 			m_error->ChangeValue( vm.error() );			
 			UpdateVMView();
 			break;
@@ -1924,7 +1925,7 @@ public:
 		{
 			wxStopWatch sw;
 			ResetRunEnv();
-			vm.run( lk::vm::NORMAL, m_runEnv );
+			vm.run( lk::vm::NORMAL );
 			long ms = sw.Time();
 			m_error->ChangeValue( vm.error() );			
 			UpdateVMView();
