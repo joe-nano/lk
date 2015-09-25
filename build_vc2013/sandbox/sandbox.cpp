@@ -142,8 +142,14 @@ public:
 
 	virtual ~vm()
 	{
+		free_frames();
+	}
+
+	void free_frames()
+	{
 		for( size_t i=0;i<frames.size(); i++ )
 			delete frames[i];
+		frames.clear();
 	}
 
 	size_t get_ip() { return ip; }
@@ -169,7 +175,7 @@ public:
 		identifiers = ids;
 		debuginfo = dbginf;
 
-		restart();
+		free_frames();
 	}
 	
 	bool special_set( const lk_string &name, vardata_t &val )
@@ -182,23 +188,23 @@ public:
 		throw error_t( "no defined mechanism to get special variable '" + name + "'" );
 	}
 
-	void restart()
+	void initialize( lk::env_t *env )
 	{
 #ifdef OP_PROFILE
 		clear_opcount();
 #endif
 
+		free_frames();
 		errStr.clear();
+
 		ip = sp = 0;
 		for( size_t i=0;i<stack.size();i++ )
 			stack[i].nullify();
-
-		for( size_t i=0;i<frames.size();i++ )
-			delete frames[i];
-		frames.clear();
-
+		
 		brkpoints.clear();
 		brkpoints.resize( program.size(), false );
+		
+		frames.push_back( new frame( env, 0, 0, 0 ) );
 	}
 
 	enum ExecMode { NORMAL, DEBUG, SINGLE };
@@ -208,11 +214,9 @@ public:
 #define CHECK_CONSTANT() if ( arg >= constants.size() ) return error( "invalid constant value address: %d\n", arg )
 #define CHECK_IDENTIFIER() if ( arg >= identifiers.size() ) return error( "invalid identifier address: %d\n", arg )
 
-
-	bool run( ExecMode mode = NORMAL, lk::env_t *env = 0 )
+	bool run( ExecMode mode = NORMAL )
 	{
-		if ( frames.size() == 0 )
-			frames.push_back( new frame( env, 0, 0, 0 ) );
+		if( frames.size() == 0 ) return false; // must initialize first.
 
 		vardata_t nullval;
 		size_t nexecuted = 0;
@@ -229,7 +233,6 @@ public:
 				opcount[op]++;
 #endif
 
-				
 				next_ip = ip+1;
 			
 				rhs = ( sp >= 1 ) ? &stack[sp-1] : NULL;
@@ -241,6 +244,164 @@ public:
 
 				switch( op )
 				{
+				case RREF:
+				case CREF:
+				case NREF:
+				{
+					frame &F = *frames.back();
+					CHECK_OVERFLOW();
+					CHECK_IDENTIFIER();
+
+					if ( fcallinfo_t *fci = F.env.lookup_func( identifiers[arg] ) )
+					{
+						stack[sp++].assign_fcall( fci );
+					}
+					else if ( vardata_t *x = F.env.lookup( identifiers[arg], op == RREF ) )
+					{
+						stack[sp++].assign( x );
+					}
+					else if ( op == CREF || op == NREF )
+					{
+						vardata_t *x = new vardata_t;
+						if ( op == CREF )
+						{
+							x->set_flag( vardata_t::CONSTVAL );
+							x->clear_flag( vardata_t::ASSIGNED );
+						}
+						F.env.assign( identifiers[arg], x );
+						stack[sp++].assign( x );
+					}
+					else
+						return error("referencing unassigned variable: %s\n", (const char*)identifiers[arg].c_str() );
+
+					break;
+				}
+			
+				case CALL:
+				case TCALL:
+				{
+					CHECK_FOR_ARGS( arg+2 );
+					if ( vardata_t::EXTFUNC == rhs_deref.type() && op == CALL )
+					{
+						frame &F = *frames.back();
+						fcallinfo_t *fci = rhs_deref.fcall();
+						vardata_t &retval = stack[ sp - arg - 2 ];
+						invoke_t cxt( &F.env, retval, fci->user_data );
+
+						for( size_t i=0;i<arg;i++ )
+							cxt.arg_list().push_back( stack[sp-arg-1+i] );						
+							
+						try {
+							if ( fci->f ) (*(fci->f))( cxt );
+							else if ( fci->f_ext ) lk::external_call( fci->f_ext, cxt );
+							else cxt.error( "invalid internal reference to function" );
+
+							sp -= (arg+1); // leave return value on stack (even if null)
+						}
+						catch( std::exception &e )
+						{
+							return error( e.what() );
+						}
+					}
+					else if ( vardata_t::INTFUNC == rhs_deref.type() )
+					{
+						frames.push_back( new frame( &frames.back()->env, sp, next_ip, arg ) );
+						frame &F = *frames.back();
+												
+						vardata_t *__args = new vardata_t;
+						__args->empty_vector();
+
+						size_t offset = 1;						
+						if ( op == TCALL )
+						{
+							offset = 2;
+							F.env.assign( "this", new vardata_t( stack[sp-2] ) );
+							F.thiscall = true;
+						}
+
+						for( size_t i=0;i<arg;i++ )
+							__args->vec()->push_back( stack[sp-arg-offset+i] );		
+						
+						F.env.assign( "__args", __args );
+
+						next_ip = rhs_deref.faddr(); 
+					}
+					else
+						return error("invalid function access");
+				}
+					break;
+
+				case ARG:
+					if ( frames.size() > 0 )
+					{
+						frame &F = *frames.back();
+						if ( F.iarg >= F.nargs )
+							return error("too few arguments passed to function");
+
+						size_t offset = F.thiscall ? 2 : 1;
+						size_t idx = F.fp - F.nargs - offset + F.iarg;
+
+						vardata_t *x = new vardata_t;
+						x->assign( &stack[idx] );
+						F.env.assign( identifiers[arg], x );
+						F.iarg++;
+					}
+					break;
+
+				case PSH:
+					CHECK_OVERFLOW();
+					CHECK_CONSTANT();
+					stack[sp++].copy( constants[arg] );
+					break;
+				case POP:
+					if ( sp == 0 ) return error("stack corruption at level 0");
+					sp--;
+					break;
+				case J:
+					next_ip = arg;
+					break;
+				case JT:
+					CHECK_FOR_ARGS( 1 );
+					if ( rhs_deref.as_boolean() ) next_ip = arg;
+					sp--;
+					break;
+				case JF:
+					CHECK_FOR_ARGS( 1 );
+					if ( !rhs_deref.as_boolean() ) next_ip = arg;
+					sp--;
+					break;
+				case IDX:
+					{
+						CHECK_FOR_ARGS( 2 );
+						size_t index = rhs_deref.as_unsigned();
+						vardata_t &arr = lhs_deref;
+						bool is_mutable = ( arg != 0 );
+						if ( is_mutable &&
+							( arr.type() != vardata_t::VECTOR
+							|| arr.length() <= index ) )
+							arr.resize( index + 1 );
+
+						result.assign( arr.index(index) );
+						sp--;
+					}
+					break;
+				case KEY:
+					{
+						CHECK_FOR_ARGS( 2 );
+						lk_string key( rhs_deref.as_string() );
+						vardata_t &hash = lhs_deref;
+						bool is_mutable = (arg != 0);
+						if ( is_mutable && hash.type() != vardata_t::HASH )
+							hash.empty_hash();
+
+						vardata_t *x = hash.lookup( key );
+						if ( !x ) hash.assign( key, x=new vardata_t );
+
+						result.assign( x );
+						sp--;
+					}
+					break;
+
 				case ADD:
 					CHECK_FOR_ARGS( 2 );
 					if ( lhs_deref.type() == vardata_t::STRING || rhs_deref.type() == vardata_t::STRING )
@@ -331,59 +492,6 @@ public:
 				case NEG:
 					CHECK_FOR_ARGS( 1 );
 					result.assign( 0.0 - rhs_deref.num() );
-					break;
-				case PSH:
-					CHECK_OVERFLOW();
-					CHECK_CONSTANT();
-					stack[sp++].copy( constants[arg] );
-					break;
-				case POP:
-					if ( sp == 0 ) return error("stack corruption at level 0");
-					sp--;
-					break;
-				case J:
-					next_ip = arg;
-					break;
-				case JT:
-					CHECK_FOR_ARGS( 1 );
-					if ( rhs_deref.as_boolean() ) next_ip = arg;
-					sp--;
-					break;
-				case JF:
-					CHECK_FOR_ARGS( 1 );
-					if ( !rhs_deref.as_boolean() ) next_ip = arg;
-					sp--;
-					break;
-				case IDX:
-					{
-						CHECK_FOR_ARGS( 2 );
-						size_t index = rhs_deref.as_unsigned();
-						vardata_t &arr = lhs_deref;
-						bool is_mutable = ( arg != 0 );
-						if ( is_mutable &&
-							( arr.type() != vardata_t::VECTOR
-							|| arr.length() <= index ) )
-							arr.resize( index + 1 );
-
-						result.assign( arr.index(index) );
-						sp--;
-					}
-					break;
-				case KEY:
-					{
-						CHECK_FOR_ARGS( 2 );
-						lk_string key( rhs_deref.as_string() );
-						vardata_t &hash = lhs_deref;
-						bool is_mutable = (arg != 0);
-						if ( is_mutable && hash.type() != vardata_t::HASH )
-							hash.empty_hash();
-
-						vardata_t *x = hash.lookup( key );
-						if ( !x ) hash.assign( key, x=new vardata_t );
-
-						result.assign( x );
-						sp--;
-					}
 					break;
 				case MAT:
 					CHECK_FOR_ARGS( 2 );
@@ -501,39 +609,6 @@ public:
 					sp--;
 					break;
 
-				case RREF:
-				case CREF:
-				case NREF:
-				{
-					frame &F = *frames.back();
-					CHECK_OVERFLOW();
-					CHECK_IDENTIFIER();
-
-					if ( fcallinfo_t *fci = F.env.lookup_func( identifiers[arg] ) )
-					{
-						stack[sp++].assign_fcall( fci );
-					}
-					else if ( vardata_t *x = F.env.lookup( identifiers[arg], op == RREF ) )
-					{
-						stack[sp++].assign( x );
-					}
-					else if ( op == CREF || op == NREF )
-					{
-						vardata_t *x = new vardata_t;
-						if ( op == CREF )
-						{
-							x->set_flag( vardata_t::CONSTVAL );
-							x->clear_flag( vardata_t::ASSIGNED );
-						}
-						F.env.assign( identifiers[arg], x );
-						stack[sp++].assign( x );
-					}
-					else
-						return error("referencing unassigned variable: %s\n", (const char*)identifiers[arg].c_str() );
-
-					break;
-				}
-
 				case TYP:
 					CHECK_OVERFLOW();
 					CHECK_IDENTIFIER();
@@ -549,76 +624,6 @@ public:
 					stack[sp++].assign_faddr( arg );
 					break;
 				
-				case CALL:
-				case TCALL:
-				{
-					CHECK_FOR_ARGS( arg+2 );
-					if ( vardata_t::EXTFUNC == rhs_deref.type() && op == CALL )
-					{
-						frame &F = *frames.back();
-						fcallinfo_t *fci = rhs_deref.fcall();
-						vardata_t &retval = stack[ sp - arg - 2 ];
-						invoke_t cxt( &F.env, retval, fci->user_data );
-
-						for( size_t i=0;i<arg;i++ )
-							cxt.arg_list().push_back( stack[sp-arg-1+i] );						
-							
-						try {
-							if ( fci->f ) (*(fci->f))( cxt );
-							else if ( fci->f_ext ) lk::external_call( fci->f_ext, cxt );
-							else cxt.error( "invalid internal reference to function" );
-
-							sp -= (arg+1); // leave return value on stack (even if null)
-						}
-						catch( std::exception &e )
-						{
-							return error( e.what() );
-						}
-					}
-					else if ( vardata_t::INTFUNC == rhs_deref.type() )
-					{
-						frames.push_back( new frame( &frames.back()->env, sp, next_ip, arg ) );
-						frame &F = *frames.back();
-												
-						vardata_t *__args = new vardata_t;
-						__args->empty_vector();
-
-						size_t offset = 1;						
-						if ( op == TCALL )
-						{
-							offset = 2;
-							F.env.assign( "this", new vardata_t( stack[sp-2] ) );
-							F.thiscall = true;
-						}
-
-						for( size_t i=0;i<arg;i++ )
-							__args->vec()->push_back( stack[sp-arg-offset+i] );		
-						
-						F.env.assign( "__args", __args );
-
-						next_ip = rhs_deref.faddr(); 
-					}
-					else
-						return error("invalid function access");
-				}
-					break;
-
-				case ARG:
-					if ( frames.size() > 0 )
-					{
-						frame &F = *frames.back();
-						if ( F.iarg >= F.nargs )
-							return error("too few arguments passed to function");
-
-						size_t offset = F.thiscall ? 2 : 1;
-						size_t idx = F.fp - F.nargs - offset + F.iarg;
-
-						vardata_t *x = new vardata_t;
-						x->assign( &stack[idx] );
-						F.env.assign( identifiers[arg], x );
-						F.iarg++;
-					}
-					break;
 
 				case RET:
 					if ( frames.size() > 1 )
@@ -735,8 +740,8 @@ class code_gen
 {
 private:	
 	struct instr {
-		instr( Opcode _op, int _arg, const char *lbl = 0 )
-			: op(_op), arg(_arg) {
+		instr( srcpos_t sp, Opcode _op, int _arg, const char *lbl = 0 )
+			: pos(sp), op(_op), arg(_arg) {
 			label = 0;
 			if ( lbl ) label = new lk_string(lbl);
 		}
@@ -763,13 +768,12 @@ private:
 			return *this;
 		}
 
+		lk::srcpos_t pos;
 		Opcode op;
 		int arg;
 		lk_string *label;
-		lk::srcpos_t pos;
 	};
 
-	node_t *m_currentNode;
 	std::vector<instr> m_asm;
 	typedef unordered_map< lk_string, int, lk_string_hash, lk_string_equal > LabelMap;
 	LabelMap m_labelAddr;
@@ -797,7 +801,6 @@ private:
 public:
 	code_gen() {
 		m_labelCounter = 1;
-		m_currentNode = 0;
 	}
 	
 	lk_string error() { return m_errStr; }
@@ -868,7 +871,9 @@ public:
 					}
 					else if ( ip.op == PSH )
 					{
-						assembly += m_constData[ip.arg].as_string();
+						wxString nnl(m_constData[ip.arg].as_string());
+						nnl.Replace( "\n", "" );
+						assembly += nnl ;
 					}
 					else if ( ip.op == SET || ip.op == GET || ip.op == RREF || ip.op == NREF || ip.op == CREF || ip.op == ARG )
 					{
@@ -900,7 +905,6 @@ public:
 
 	bool build( lk::node_t *root )
 	{
-		m_currentNode = 0;
 		m_idList.clear();
 		m_constData.clear();
 		m_asm.clear();
@@ -959,19 +963,15 @@ private:
 		m_labelAddr[ s ] = (int)m_asm.size();
 	}
 
-	int emit( Opcode o, int arg = 0)
+	int emit( srcpos_t pos, Opcode o, int arg = 0)
 	{
-		instr x( o, arg );
-		if ( m_currentNode ) x.pos = m_currentNode->srcpos();
-		m_asm.push_back( x );
+		m_asm.push_back( instr( pos, o, arg ) );
 		return m_asm.size();
 	}
 
-	int emit( Opcode o, const lk_string &L )
+	int emit( srcpos_t pos, Opcode o, const lk_string &L )
 	{
-		instr x(o, 0, (const char*) L.c_str());
-		if ( m_currentNode ) x.pos = m_currentNode->srcpos();
-		m_asm.push_back( x );
+		m_asm.push_back( instr(pos, o, 0, (const char*) L.c_str()) );
 		return m_asm.size();
 	}
 
@@ -1064,13 +1064,12 @@ private:
 	{
 		bool ok = pfgen( root, flags );
 		// expressions always leave their value on the stack, so clean it up
-		if (expr_t *e = dynamic_cast<expr_t*>(root)) emit( POP );
+		if (expr_t *e = dynamic_cast<expr_t*>(root)) emit( e->srcpos(), POP );
 		return ok;
 	}
 
 	bool pfgen( lk::node_t *root, unsigned int flags )
 	{
-		m_currentNode = root;
 		if ( !root ) return true;
 
 		if ( list_t *n = dynamic_cast<list_t*>( root ) )
@@ -1098,13 +1097,13 @@ private:
 
 			if ( !pfgen( n->test, flags ) ) return false;
 
-			emit( JF, Le );
+			emit( n->srcpos(), JF, Le );
 			
 			pfgen_stmt( n->block, flags );
 
 			if ( n->adv && !pfgen_stmt( n->adv, flags ) ) return false;
 
-			emit( J, Lb );
+			emit( n->srcpos(), J, Lb );
 			place_label( Le );
 
 			m_continueAddr.pop_back();
@@ -1116,12 +1115,12 @@ private:
 			lk_string L2 = L1;
 
 			pfgen( n->test, flags );
-			emit( JF, L1 );
+			emit( n->srcpos(), JF, L1 );
 			pfgen_stmt( n->on_true, flags );
 			if ( n->on_false )
 			{
 				L2 = new_label();
-				emit( J, L2 );
+				emit( n->srcpos(), J, L2 );
 				place_label( L1 );
 				pfgen_stmt( n->on_false, flags );
 			}
@@ -1134,69 +1133,69 @@ private:
 			case expr_t::PLUS:
 				pfgen( n->left, flags );
 				pfgen( n->right, flags );
-				emit( ADD );
+				emit(  n->srcpos(), ADD );
 				break;
 			case expr_t::MINUS:
 				pfgen( n->left, flags );
 				pfgen( n->right, flags );
-				emit( SUB );
+				emit( n->srcpos(), SUB );
 				break;
 			case expr_t::MULT:
 				pfgen( n->left, flags );
 				pfgen( n->right, flags );
-				emit( MUL );
+				emit( n->srcpos(), MUL );
 				break;
 			case expr_t::DIV:
 				pfgen( n->left, flags );
 				pfgen( n->right, flags );
-				emit( DIV );
+				emit( n->srcpos(), DIV );
 				break;
 			case expr_t::LT:
 				pfgen( n->left, flags );
 				pfgen( n->right, flags );
-				emit( LT );
+				emit( n->srcpos(), LT );
 				break;
 			case expr_t::GT:
 				pfgen( n->left, flags );
 				pfgen( n->right, flags );
-				emit( GT );
+				emit( n->srcpos(), GT );
 				break;
 			case expr_t::LE:
 				pfgen( n->left, flags );
 				pfgen( n->right, flags );
-				emit( LE );
+				emit( n->srcpos(), LE );
 				break;
 			case expr_t::GE:
 				pfgen( n->left, flags );
 				pfgen( n->right, flags );
-				emit( GE );
+				emit( n->srcpos(), GE );
 				break;
 			case expr_t::NE:
 				pfgen( n->left, flags );
 				pfgen( n->right, flags );
-				emit( NE );
+				emit( n->srcpos(), NE );
 				break;
 			case expr_t::EQ:
 				pfgen( n->left, flags );
 				pfgen( n->right, flags );
-				emit( EQ );
+				emit( n->srcpos(), EQ );
 				break;
 			case expr_t::INCR:
 				pfgen( n->left, flags );
-				emit( INC );
+				emit( n->srcpos(), INC );
 				break;
 			case expr_t::DECR:
 				pfgen( n->left, flags );
-				emit( DEC );
+				emit( n->srcpos(), DEC );
 				break;
 			case expr_t::LOGIOR:
 			{
 				lk_string Lsc = new_label();
 				pfgen(n->left, flags );
-				emit( DUP );
-				emit( JT, Lsc );
+				emit( n->srcpos(), DUP );
+				emit( n->srcpos(), JT, Lsc );
 				pfgen(n->right, flags);
-				emit( OR );
+				emit( n->srcpos(), OR );
 				place_label( Lsc );
 			}
 				break;
@@ -1204,73 +1203,73 @@ private:
 			{
 				lk_string Lsc = new_label();
 				pfgen(n->left, flags );
-				emit( DUP );
-				emit( JF, Lsc );
+				emit( n->srcpos(), DUP );
+				emit( n->srcpos(), JF, Lsc );
 				pfgen(n->right, flags );
-				emit( AND );
+				emit( n->srcpos(), AND );
 				place_label( Lsc );
 			}
 				break;
 			case expr_t::NOT:
 				pfgen(n->left, flags);
-				emit( NOT );
+				emit( n->srcpos(), NOT );
 				break;
 			case expr_t::NEG:
 				pfgen(n->left, flags);
-				emit( NEG );
+				emit( n->srcpos(), NEG );
 				break;				
 			case expr_t::EXP:
 				pfgen(n->left, flags);
 				pfgen(n->right, flags);
-				emit( EXP );
+				emit( n->srcpos(), EXP );
 				break;
 			case expr_t::INDEX:
 				pfgen(n->left, flags );
 				pfgen(n->right, F_NONE);
-				emit( IDX, flags&F_MUTABLE );
+				emit( n->srcpos(), IDX, flags&F_MUTABLE );
 				break;
 			case expr_t::HASH:
 				pfgen(n->left, flags);
 				pfgen(n->right, F_NONE);
-				emit( KEY, flags&F_MUTABLE );
+				emit( n->srcpos(), KEY, flags&F_MUTABLE );
 				break;
 			case expr_t::MINUSAT:
 				pfgen(n->left, F_NONE );
 				pfgen(n->right, flags);
-				emit( MAT );
+				emit( n->srcpos(), MAT );
 				break;
 			case expr_t::WHEREAT:
 				pfgen(n->left, F_NONE );
 				pfgen(n->right, flags);
-				emit( WAT );
+				emit( n->srcpos(), WAT );
 				break;
 			case expr_t::PLUSEQ:
 				pfgen(n->left, F_NONE);
 				pfgen(n->right, F_NONE);
-				emit( ADD );
+				emit( n->srcpos(), ADD );
 				pfgen(n->left, F_NONE);
-				emit( WR );
+				emit( n->srcpos(), WR );
 				break;
 			case expr_t::MINUSEQ:
 				pfgen(n->left, F_NONE);
 				pfgen(n->right, F_NONE);
-				emit( SUB );
+				emit( n->srcpos(), SUB );
 				pfgen(n->left, F_NONE);
-				emit( WR );
+				emit( n->srcpos(), WR );
 				break;
 			case expr_t::MULTEQ:
 				pfgen(n->left, F_NONE);
 				pfgen(n->right, F_NONE);
-				emit( MUL );
+				emit( n->srcpos(), MUL );
 				pfgen(n->left, F_NONE);
-				emit( WR );
+				emit( n->srcpos(), WR );
 				break;
 			case expr_t::DIVEQ:
 				pfgen(n->left, F_NONE);
 				pfgen(n->right, F_NONE);
-				emit( DIV );
+				emit( n->srcpos(), DIV );
 				pfgen(n->left, F_NONE);
-				emit( WR );
+				emit( n->srcpos(), WR );
 				break;
 			case expr_t::ASSIGN:
 				{
@@ -1283,20 +1282,20 @@ private:
 					{
 						if ( iden->special )
 						{
-							emit( SET, place_identifier(iden->name) );
+							emit( n->srcpos(), SET, place_identifier(iden->name) );
 							return true;
 						}
 					}
 
 					if ( !pfgen( n->left, F_MUTABLE ) ) return false;
-					emit( WR );
+					emit( n->srcpos(), WR );
 				}
 				break;
 			case expr_t::CALL:
 			case expr_t::THISCALL:
 			{
 				// make space on stack for the return value
-				emit( NUL );
+				emit( n->srcpos(), NUL );
 
 				// evaluate all the arguments and pushon to stack
 				list_t *argvals = dynamic_cast<list_t*>(n->right);
@@ -1315,27 +1314,27 @@ private:
 				{
 
 					pfgen( lexpr->left, F_NONE );
-					emit( DUP );
+					emit( n->srcpos(), DUP );
 					pfgen( lexpr->right, F_NONE );
-					emit( KEY );
+					emit( n->srcpos(), KEY );
 				}
 				else
 					pfgen( n->left, F_NONE );
 
-				emit( (n->oper == expr_t::THISCALL)? TCALL : CALL, nargs );
+				emit( n->srcpos(),  (n->oper == expr_t::THISCALL)? TCALL : CALL, nargs );
 			}
 				break;
 			case expr_t::SIZEOF:
 				pfgen( n->left, F_NONE );
-				emit( SZ );
+				emit( n->srcpos(), SZ );
 				break;
 			case expr_t::KEYSOF:
 				pfgen( n->left, F_NONE );
-				emit( KEYS );
+				emit( n->srcpos(), KEYS );
 				break;
 			case expr_t::TYPEOF:
 				if ( iden_t *iden = dynamic_cast<iden_t*>( n->left ) )
-					emit( TYP, place_identifier( iden->name ) );
+					emit( n->srcpos(), TYP, place_identifier( iden->name ) );
 				else
 					return error( "invalid typeof expression, identifier required" );
 				break;
@@ -1346,7 +1345,7 @@ private:
 				cvec.empty_vector();
 				if ( p && initialize_const_vec( p, cvec ) )
 				{
-					emit( PSH, place_const( cvec ) );
+					emit( n->srcpos(), PSH, place_const( cvec ) );
 				}
 				else
 				{
@@ -1357,7 +1356,7 @@ private:
 						p = p->next;
 						len++;
 					}
-					emit( VEC, len );
+					emit( n->srcpos(), VEC, len );
 				}
 			}
 				break;
@@ -1368,7 +1367,7 @@ private:
 				chash.empty_hash();
 				if ( p && initialize_const_hash( p, chash ) )
 				{
-					emit( PSH, place_const( chash ) );
+					emit( n->srcpos(), PSH, place_const( chash ) );
 				}
 				else
 				{
@@ -1384,7 +1383,7 @@ private:
 						p = p->next;
 						npairs++;
 					}
-					emit( HASH, npairs );
+					emit( n->srcpos(), HASH, npairs );
 				}
 			}
 				break;
@@ -1404,14 +1403,14 @@ private:
 				while( p )
 				{
 					pfgen( n->left, F_NONE );
-					emit( PSH,  const_value(idx) );
-					emit( EQ );
-					emit( JT, labels[idx] );
+					emit( n->srcpos(), PSH,  const_value(idx) );
+					emit( n->srcpos(), EQ );
+					emit( n->srcpos(), JT, labels[idx] );
 					p = p->next;
 					idx++;
 				}
 
-				emit( J, Le );
+				emit( n->srcpos(), J, Le );
 				
 				p = dynamic_cast<list_t*>( n->right );
 				idx = 0;
@@ -1419,7 +1418,7 @@ private:
 				{
 					place_label( labels[idx++] );
 					pfgen( p->item, F_NONE );
-					emit( J, Le );
+					emit( p->item ? p->item->srcpos() : n->srcpos(), J, Le );
 					p = p->next;
 				}
 
@@ -1431,7 +1430,7 @@ private:
 			{
 				lk_string Le( new_label() );
 				lk_string Lf( new_label() );
-				emit( J, Le );
+				emit( n->srcpos(), J, Le );
 				place_label( Lf );
 
 				list_t *p = dynamic_cast<list_t*>(n->left );
@@ -1439,17 +1438,17 @@ private:
 				while( p )
 				{
 					iden_t *id = dynamic_cast<iden_t*>( p->item );
-					emit( ARG, place_identifier(id->name) );
+					emit( p->item ? p->item->srcpos() : n->srcpos(), ARG, place_identifier(id->name) );
 					p = p->next;
 				}
 
 				pfgen( n->right, F_NONE );
 
 				if ( m_asm.back().op != RET )
-					emit( RET, 0 );
+					emit( n->srcpos(), RET, 0 );
 
 				place_label( Le );
-				emit( FREF, Lf );
+				emit( n->srcpos(), FREF, Lf );
 
 			}
 				break;
@@ -1464,24 +1463,24 @@ private:
 			{
 			case ctlstmt_t::RETURN:
 				pfgen(n->rexpr, F_NONE );
-				emit( RET, n->rexpr ? 1 : 0 );
+				emit( n->srcpos(), RET, n->rexpr ? 1 : 0 );
 				break;
 
 			case ctlstmt_t::BREAK:
 				if ( m_breakAddr.size() == 0 )
 					return false;
 
-				emit( J, m_breakAddr.back() );
+				emit( n->srcpos(), J, m_breakAddr.back() );
 				break;
 
 			case ctlstmt_t::CONTINUE:
 				if ( m_continueAddr.size() == 0 )
 					return false;
-				emit( J, m_continueAddr.back() );
+				emit( n->srcpos(), J, m_continueAddr.back() );
 				break;
 
 			case ctlstmt_t::EXIT:
-				emit( END );
+				emit( n->srcpos(), END );
 				break;
 
 			default:
@@ -1492,7 +1491,7 @@ private:
 		{			
 			if ( n->special )
 			{
-				emit( GET, place_identifier(n->name) );
+				emit( n->srcpos(), GET, place_identifier(n->name) );
 				return true;
 			}
 			else
@@ -1501,20 +1500,20 @@ private:
 				if ( n->constval && flags & F_MUTABLE ) op = CREF;
 				else if ( flags & F_MUTABLE ) op = NREF;
 
-				emit( op, place_identifier(n->name) );
+				emit( n->srcpos(), op, place_identifier(n->name) );
 			}
 		}
 		else if ( null_t *n = dynamic_cast<null_t*>(root) )
 		{
-			emit( NUL );
+			emit( n->srcpos(), NUL );
 		}
 		else if ( constant_t *n = dynamic_cast<constant_t*>(root ) )
 		{
-			emit( PSH, const_value( n->value ) );
+			emit( n->srcpos(), PSH, const_value( n->value ) );
 		}
 		else if ( literal_t *n = dynamic_cast<literal_t*>(root ) )
 		{
-			emit( PSH, const_literal( n->value ) );
+			emit( n->srcpos(), PSH, const_literal( n->value ) );
 		}
 
 		return true;
@@ -1764,7 +1763,8 @@ public:
 	void UpdateVMView()
 	{
 		size_t ip = vm.get_ip();
-		if ( ip  < m_asm->GetCount() )
+		size_t iasmsz = m_asm->GetCount();
+		if ( ip  <  iasmsz )
 			m_asm->SetSelection( ip );
 
 		if ( ip < debuginfo.size() )
@@ -1819,7 +1819,7 @@ public:
 
 	void ParseAndGenerateAssembly()
 	{
-		wxString output, assembly, bytecode;
+		wxString output, assembly, bytecode_text;
 		lk::input_string input( m_code->GetValue() );
 		lk::parser parse( input );
 		if ( lk::node_t *node = parse.script() )
@@ -1829,7 +1829,7 @@ public:
 				lk::pretty_print( output, node, 0 );
 				lk::code_gen cg;
 				if ( cg.build( node ) ) {
-					cg.output( assembly, bytecode );
+					cg.output( assembly, bytecode_text );
 					cg.bytecode( program, constants, identifiers, debuginfo );
 				}
 				else assembly = "error in assembly generation";
@@ -1865,9 +1865,12 @@ public:
 		m_parse->ChangeValue( output );
 		m_asm->Freeze();
 		m_asm->Clear();
-		m_asm->Append( wxStringTokenize(assembly, "\n") );
+		wxArrayString asmlines( wxStringTokenize(assembly, "\n") );
+		if ( asmlines.Count() != program.size() )
+			wxMessageBox( wxString::Format("Error in number of assembly lines: %d vs %d", asmlines.Count(), program.size()));
+		m_asm->Append( asmlines );
 		m_asm->Thaw();
-		m_bytecode->ChangeValue( bytecode );
+		m_bytecode->ChangeValue( bytecode_text );
 
 	}
 

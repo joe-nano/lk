@@ -195,18 +195,22 @@ lk::node_t *lk::parser::statement()
 		// function my_function(...) {  }
 		if ( token() != lexer::IDENTIFIER )
 			error("function name missing");
+		
+		srcpos_t pos = srcpos();
 
 		lk_string name = lex.text();
 		skip();
-		
+
 		match( lk::lexer::SEP_LPAREN );
 		node_t *a = identifierlist( lk::lexer::SEP_COMMA, lk::lexer::SEP_RPAREN );
 		match( lk::lexer::SEP_RPAREN );
-		node_t *b = block();
 		
-		return new expr_t( srcpos(), expr_t::ASSIGN,
-			new iden_t( srcpos(), name, true, false ), 
-			new expr_t( srcpos(), expr_t::DEFINE,
+
+		node_t *b = block();	
+
+		return new expr_t( pos, expr_t::ASSIGN,
+			new iden_t( pos, name, true, false ), 
+			new expr_t( pos, expr_t::DEFINE,
 				a, b ));
 	}
 	else if (lex.text() == "if")
@@ -514,13 +518,14 @@ lk::node_t *lk::parser::define()
 {
 	if (m_haltFlag) return 0;
 	
+	srcpos_t pos = srcpos();
 	match("define");
 	match( lk::lexer::SEP_LPAREN );
 	node_t *a = identifierlist( lk::lexer::SEP_COMMA, lk::lexer::SEP_RPAREN );
 	match( lk::lexer::SEP_RPAREN );
 	node_t *b = block();
 	
-	return new expr_t( srcpos(), expr_t::DEFINE, a, b );
+	return new expr_t( pos, expr_t::DEFINE, a, b );
 }
 
 lk::node_t *lk::parser::assignment()
