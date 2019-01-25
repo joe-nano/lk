@@ -1,27 +1,3 @@
-/***********************************************************************************************************************
-*  LK, Copyright (c) 2008-2017, Alliance for Sustainable Energy, LLC. All rights reserved.
-*
-*  Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
-*  following conditions are met:
-*
-*  (1) Redistributions of source code must retain the above copyright notice, this list of conditions and the following
-*  disclaimer.
-*
-*  (2) Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the
-*  following disclaimer in the documentation and/or other materials provided with the distribution.
-*
-*  (3) Neither the name of the copyright holder nor the names of any contributors may be used to endorse or promote
-*  products derived from this software without specific prior written permission from the respective party.
-*
-*  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
-*  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-*  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER, THE UNITED STATES GOVERNMENT, OR ANY CONTRIBUTORS BE LIABLE FOR
-*  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-*  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
-*  AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-*  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-**********************************************************************************************************************/
-
 #ifndef __lk_parse_h
 #define __lk_parse_h
 
@@ -31,25 +7,15 @@
 
 namespace lk
 {
-
-/**
-* \class parser
-*
-* Contains functions used to take an lk script as input_bases and to parse them using lexer.
-* Returns nodes_t as nodes in recursive descent tree, where root node is produced by script().
-* Expressions stored as binary trees and functions as abstract trees.
-*
-*/
-
 	class parser
 	{
 	public:
-		parser(input_base &input, const lk_string &name = "");
+		parser( input_base &input, const lk_string &name = "" );
 
-		void add_search_path(const lk_string &path) { m_searchPaths.push_back(path); }
-		void add_search_paths(const std::vector<lk_string> &paths);
+		void add_search_path( const lk_string &path ) { m_searchPaths.push_back( path ); }
+		void add_search_paths( const std::vector<lk_string> &paths );
 		std::vector<lk_string> get_search_paths() const { return m_searchPaths; }
-
+				
 		node_t *script();
 		node_t *block();
 		node_t *statement();
@@ -57,7 +23,7 @@ namespace lk
 		node_t *enumerate();
 		node_t *loop();
 		node_t *define();
-		node_t *assignment();
+		node_t *assignment();		
 		node_t *ternary();
 		node_t *logicalor();
 		node_t *logicaland();
@@ -68,17 +34,17 @@ namespace lk
 		node_t *exponential();
 		node_t *unary();
 		node_t *postfix();
-		node_t *primary();
-
+		node_t *primary();		
+		
 		srcpos_t srcpos();
 		int line() { return lex.line(); }
 		int error_count() { return m_errorList.size(); }
 		lk_string error(int idx, int *line = 0);
 
-		int token();		// describes what type the current statement should be treated as
+		int token();
 		bool token(int t);
 		
-		void skip();		// moves through input, updating positions
+		void skip();
 		bool match(int t);
 		bool match( const char *s );
 		
