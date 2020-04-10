@@ -8,7 +8,7 @@ set(CMAKE_VERBOSE_MAKEFILE ON)
 
 cmake_minimum_required(VERSION 3.11)
 
-option(skip_sandboxes "Skips the lk sandboxes" ON)
+option(skip_tools "Skips the lk sandbox" OFF)
 
 if (APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9" CACHE STRING "Minimum OS X deployment version")
@@ -19,6 +19,7 @@ if (UNIX AND NOT CMAKE_C_COMPILER)
     set(CMAKE_CXX_COMPILER g++)
 endif ()
 
+Project(lk)
 
 #####################################################################################################################
 #
@@ -76,9 +77,8 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${wxWidgets_CXX_FLAGS}")
 #
 #####################################################################################################################
 
-Project(lk)
 add_subdirectory(src)
-if (NOT skip_sandboxes)
+if (NOT skip_tools)
     add_subdirectory(sandbox)
 endif()
 
