@@ -8,6 +8,8 @@ set(CMAKE_VERBOSE_MAKEFILE ON)
 
 cmake_minimum_required(VERSION 3.11)
 
+option(skip_sandboxes "Skips the lk sandboxes" ON)
+
 if (APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9" CACHE STRING "Minimum OS X deployment version")
 endif ()
@@ -16,27 +18,6 @@ if (UNIX AND NOT CMAKE_C_COMPILER)
     set(CMAKE_C_COMPILER gcc)
     set(CMAKE_CXX_COMPILER g++)
 endif ()
-
-
-#####################################################################################################################
-#
-# Project Sources
-#
-#####################################################################################################################
-
-Project(lk)
-
-set(LK_SRC
-        src/absyn.cpp
-        src/eval.cpp
-        src/parse.cpp
-        src/vm.cpp
-        src/codegen.cpp
-        src/invoke.cpp
-        src/env.cpp
-        src/lex.cpp
-        src/sqlite3.c
-        src/stdlib.cpp)
 
 
 #####################################################################################################################
@@ -91,54 +72,13 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${wxWidgets_CXX_FLAGS}")
 
 #####################################################################################################################
 #
-# CMake Targets
+# Project Sources
 #
 #####################################################################################################################
 
-# lk library
-add_library(lk STATIC ${LK_SRC})
-set_target_properties(lk
-        PROPERTIES
-        DEBUG_POSTFIX "d"
-        PREFIX ""
-        )
-if (MSVC)
-    set_target_properties(lk
-            PROPERTIES
-            LINK_FLAGS /SUBSYSTEM:CONSOLE)
-endif ()
+Project(lk)
+add_subdirectory(src)
+if (NOT skip_sandboxes)
+    add_subdirectory(sandbox)
+endif()
 
-target_include_directories(lk PRIVATE include)
-
-# sandbox executable
-add_executable(lk_sandbox ${LK_SRC} sandbox/sandbox.cpp)
-set_target_properties(lk_sandbox
-        PROPERTIES
-        DEBUG_POSTFIX "d"
-        )
-if (MSVC)
-    set_target_properties(lk_sandbox
-            PROPERTIES
-            LINK_FLAGS /SUBSYSTEM:WINDOWS)
-endif ()
-
-target_include_directories(lk_sandbox PUBLIC include)
-
-
-#####################################################################################################################
-#
-# Link Libraries and Options
-#
-#####################################################################################################################
-
-# lk library
-if (${CMAKE_PROJECT_NAME} STREQUAL export_config)
-    target_compile_definitions(lk PUBLIC _export_config_)
-endif ()
-
-# sandbox executable
-if (UNIX)
-    target_link_libraries(lk_sandbox -ldl)
-endif ()
-
-target_link_libraries(lk_sandbox lk ${wxWidgets_LIBRARIES})
